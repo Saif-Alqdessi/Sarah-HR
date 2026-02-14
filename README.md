@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🎙️ Sarah AI - Intelligent Recruitment for Golden Crust Bakery
+# 🎙️ Sarah AI - Intelligent Recruitment for Qapalan Bakery
 
 **Context-Aware Voice AI Agent for Credibility-Focused Interviews in Jordanian Arabic**
 
