@@ -1,0 +1,159 @@
+<div align="center">
+
+# 🎙️ Sarah AI - Intelligent Recruitment for Golden Crust Bakery
+
+**Context-Aware Voice AI Agent for Credibility-Focused Interviews in Jordanian Arabic**
+
+[![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?style=for-the-badge&logo=fastapi)](https://fastapi.tiangolo.com/)
+[![Next.js](https://img.shields.io/badge/Frontend-Next.js-black?style=for-the-badge&logo=next.js)](https://nextjs.org/)
+[![Groq](https://img.shields.io/badge/LLM-Groq-FF5A00?style=for-the-badge)](https://groq.com/)
+[![Supabase](https://img.shields.io/badge/Database-Supabase-3ECF8E?style=for-the-badge&logo=supabase)](https://supabase.io/)
+
+</div>
+
+## 📋 Project Overview
+
+Sarah AI is a sophisticated voice agent that conducts context-aware interviews in Jordanian Arabic for Golden Crust Bakery. The system enhances the recruitment process by comparing candidates' registration form data with their live interview responses, detecting inconsistencies in real-time, and providing credibility scoring to help HR teams make better hiring decisions.
+
+## ✨ Key Features
+
+- 🎙️ **Groq STT Integration:** 99% accurate Arabic transcription using Whisper-large-v3-turbo
+- 🧠 **Context-Aware Brain:** Uses pre-interview registration data to build personalized questions
+- ⚖️ **Credibility Scorer:** Real-time inconsistency detection between form data and transcript
+- 🇯🇴 **Localized Tone:** Friendly Jordanian/Levantine dialect with natural conversation flow
+- 📊 **HR Dashboard:** Real-time visual progress and credibility alerts during interviews
+
+## 🏗️ Architecture
+
+```mermaid
+flowchart LR
+    A[Frontend - Next.js] -->|WebRTC Audio| B[Backend - FastAPI]
+    B -->|Audio| C[Groq Whisper STT]
+    C -->|Arabic Text| D[Intelligent Agent]
+    D -->|Context-Aware Response| E[ElevenLabs TTS]
+    F[(Supabase DB)] -->|Registration Form| D
+    D -->|Inconsistencies| F
+    E -->|Audio Response| A
+    G[Credibility Scorer] -->|Credibility Assessment| F
+```
+
+## 🧱 Project Structure
+
+```
+├── frontend/          # Next.js 14 (App Router) + Tailwind CSS
+├── backend/           # FastAPI (Python)
+│   ├── app/
+│   │   ├── api/       # API routes
+│   │   ├── models/    # Pydantic models
+│   │   ├── services/  # Business logic
+│   │   └── db/        # Database connections
+├── docker-compose.yml # Orchestrates both services
+├── .env.example       # Environment template (copy to .env)
+└── ARCHITECTURE.md    # Full technical specification
+```
+
+## 🚀 Quick Start
+
+### 1. Environment Setup
+
+Copy the environment template and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your Supabase, Groq, and ElevenLabs API keys.
+
+### 2. Run with Docker Compose
+
+```bash
+docker-compose up --build
+```
+
+- **Frontend**: http://localhost:3000
+- **Backend API**: http://localhost:8000
+- **API Docs**: http://localhost:8000/docs
+
+### 3. Run Locally (Development)
+
+**Backend:**
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+**Frontend:**
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+## 🧪 Testing the System
+
+1. Register a candidate through the `/apply` form
+2. Access the interview page at `/interview/[candidateId]`
+3. Conduct a voice interview with Sarah AI
+4. Observe real-time inconsistency detection
+5. Review the final credibility assessment in the HR dashboard
+
+## 📝 License
+
+This project is proprietary and confidential. © 2026 Golden Crust Bakery.
+
+## 🙏 Acknowledgements
+
+- [Groq](https://groq.com/) for high-performance LLM and STT
+- [ElevenLabs](https://elevenlabs.io/) for natural Arabic TTS
+- [Supabase](https://supabase.io/) for database and authentication
+- [FastAPI](https://fastapi.tiangolo.com/) and [Next.js](https://nextjs.org/) for the application framework
+
+## 🛠️ Tech Stack
+
+| Component | Technology | Description |
+|-----------|------------|-------------|
+| **Frontend** | Next.js 14 | React framework with App Router and Tailwind CSS |
+| **Backend** | FastAPI | High-performance Python API framework |
+| **Database** | Supabase | PostgreSQL database with real-time capabilities |
+| **Speech-to-Text** | Groq Whisper | High-accuracy Arabic transcription |
+| **LLM** | Groq Llama-3 | Context-aware interview agent |
+| **Text-to-Speech** | ElevenLabs | Natural Arabic voice synthesis |
+| **Deployment** | Docker | Containerized deployment with Docker Compose |
+
+## 🔑 Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_KEY` | Supabase service role key |
+| `GROQ_API_KEY` | Groq API key for STT and LLM |
+| `OPENAI_API_BASE` | Groq API base URL |
+| `GEMINI_API_KEY` | Google Gemini API key (fallback) |
+| `NEXT_PUBLIC_ELEVENLABS_API_KEY` | ElevenLabs API key (frontend) |
+| `NEXT_PUBLIC_SUPABASE_*` | Supabase client credentials |
+
+## 🚀 Key Routes
+
+**Frontend:**
+- `/apply` - Candidate registration form with detailed fields
+- `/interview/[candidateId]` - Context-aware voice AI interview with Sarah
+- `/dashboard` - HR dashboard with candidate overview
+- `/dashboard/candidates/[id]` - Detailed candidate profile with credibility assessment
+- `/dashboard/analytics` - Interview analytics and insights
+
+**Backend API:**
+- `POST /api/transcribe` - Groq Whisper transcription endpoint
+- `POST /api/agent-response` - Context-aware intelligent agent
+- `POST /api/interview/start` - Initialize interview session
+- `POST /api/vapi-webhook` - End-of-call webhook with credibility scoring
+
+## 📊 Credibility Scoring
+
+Sarah AI features a sophisticated credibility scoring system that:
+
+1. Compares registration form data with interview responses
+2. Detects inconsistencies in real-time during the interview
+3. Flags potential misrepresentations with severity ratings
+4. Provides HR staff with a comprehensive credibility assessment
+5. Stores inconsistencies for future reference and pattern analysis
