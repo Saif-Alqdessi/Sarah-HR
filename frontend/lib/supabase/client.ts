@@ -1,11 +1,23 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 /**
+ * Singleton Supabase client to prevent "Multiple GoTrueClient instances" error
+ */
+let supabaseInstance: SupabaseClient | null = null;
+
+/**
  * Creates a Supabase client strictly using environment variables.
+ * Uses singleton pattern to prevent multiple client instances.
  * No fallbacks or hardcoded URLs - fixes ERR_NAME_NOT_RESOLVED for placeholder domains.
  * Restart dev server or rebuild after changing .env.local.
  */
 export function createSupabaseClient(): SupabaseClient {
+  // Return existing instance if already created
+  if (supabaseInstance) {
+    return supabaseInstance;
+  }
+  
+  // Get environment variables
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -21,5 +33,7 @@ export function createSupabaseClient(): SupabaseClient {
     );
   }
 
-  return createClient(supabaseUrl, supabaseAnonKey);
+  // Create new instance and store it
+  supabaseInstance = createClient(supabaseUrl, supabaseAnonKey);
+  return supabaseInstance;
 }

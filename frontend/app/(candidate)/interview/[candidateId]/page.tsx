@@ -6,7 +6,7 @@ import { createSupabaseClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
 
 interface RegistrationForm {
-  full_name_ar?: string;
+  full_name?: string;
   years_of_experience?: string;
   expected_salary?: string;
   has_field_experience?: string;
@@ -52,32 +52,77 @@ export default function InterviewPage() {
   const [interviewId, setInterviewId] = useState<string | null>(null);
   const [detectedInconsistencies, setDetectedInconsistencies] = useState<Inconsistency[]>([]);
   const [showInconsistencyAlert, setShowInconsistencyAlert] = useState(false);
+  const [registrationForm, setRegistrationForm] = useState<any>(null);
+  const [loadingContext, setLoadingContext] = useState(true);
   
   // Audio recording refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
 
-  // Fetch candidate from Supabase
+  // Fetch registration context from the new endpoint
+  useEffect(() => {
+    const fetchRegistrationContext = async () => {
+      try {
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
+        const response = await fetch(`${apiUrl}/api/candidates/${params.candidateId}/registration-context`);
+        if (response.ok) {
+          const data = await response.json();
+          setRegistrationForm(data);
+          console.log('✅ Loaded registration context:', data);
+        }
+      } catch (error) {
+        console.error('Error loading registration context:', error);
+      } finally {
+        setLoadingContext(false);
+      }
+    };
+
+    fetchRegistrationContext();
+  }, [params.candidateId]);
+
+  // Fetch candidate from backend API instead of direct Supabase query
   useEffect(() => {
     async function fetchCandidate() {
       if (!candidateId) return;
       try {
-        const supabase = createSupabaseClient();
-        const { data, error } = await supabase
-          .from("candidates")
-          .select(
-            "id, full_name, phone_number, email, target_role, " +
-            "full_name_ar, years_of_experience, expected_salary, " +
-            "has_field_experience, proximity_to_branch, academic_status, " +
-            "can_start_immediately, prayer_regularity, is_smoker, registration_form_data"
-          )
-          .eq("id", candidateId)
-          .single();
-
-        if (error) throw error;
-        if (!data) throw new Error("Candidate not found");
-        setCandidate(data as Candidate);
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
+        const response = await fetch(`${apiUrl}/api/candidates/${candidateId}`, {
+          method: "GET",
+          headers: { "Content-Type": "application/json" },
+        });
+        
+        if (!response.ok) {
+          if (response.status === 404) {
+            throw new Error("Candidate not found");
+          } else if (response.status === 504) {
+            throw new Error("Request timed out. Please try again.");
+          } else {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.detail || `Error ${response.status}: Failed to load candidate`);
+          }
+        }
+        
+        const data = await response.json();
+        
+        // Map registration form fields to the expected structure
+        const candidate = {
+          ...data,
+          registration_form: {
+            full_name: data.full_name,
+            years_of_experience: data.years_of_experience,
+            expected_salary: data.expected_salary,
+            has_field_experience: data.has_field_experience,
+            proximity_to_branch: data.proximity_to_branch,
+            academic_status: data.academic_status,
+            can_start_immediately: data.can_start_immediately,
+            prayer_regularity: data.prayer_regularity,
+            is_smoker: data.is_smoker,
+            registration_form_data: data.registration_form_data
+          }
+        };
+        
+        setCandidate(candidate as Candidate);
       } catch (err) {
         const msg =
           err instanceof Error ? err.message : "Failed to load candidate";
@@ -326,8 +371,20 @@ export default function InterviewPage() {
   }
 
   // Registration Context Panel Component
-  const RegistrationContextPanel = ({ registrationForm }: { registrationForm?: RegistrationForm }) => {
-    if (!registrationForm) return null;
+  const RegistrationContextPanel = ({ registrationForm, loading }: { registrationForm?: RegistrationForm; loading?: boolean }) => {
+    if (loading) {
+      return (
+        <div className="bg-gray-100 border border-gray-200 rounded-lg p-4 mb-6 animate-pulse">
+          <div className="h-4 bg-gray-300 rounded w-1/4 mb-3"></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="h-3 bg-gray-300 rounded"></div>
+            <div className="h-3 bg-gray-300 rounded"></div>
+          </div>
+        </div>
+      );
+    }
+    
+    if (!registrationForm || Object.keys(registrationForm).length === 0) return null;
     
     return (
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
@@ -422,7 +479,10 @@ export default function InterviewPage() {
           
           {/* Registration Context Panel */}
           <div className="mt-6">
-            <RegistrationContextPanel registrationForm={candidate?.registration_form} />
+            <RegistrationContextPanel 
+              registrationForm={registrationForm || candidate?.registration_form}
+              loading={loadingContext}
+            />
           </div>
           
           {/* Inconsistency Alert */}

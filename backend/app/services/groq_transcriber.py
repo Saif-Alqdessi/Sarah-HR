@@ -9,8 +9,17 @@ class GroqTranscriber:
     """
     
     def __init__(self):
-        self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-        self.model = "whisper-large-v3-turbo"
+        try:
+            api_key = os.getenv("GROQ_API_KEY")
+            if not api_key:
+                print("⚠️ Warning: GROQ_API_KEY not found in environment variables")
+                self.client = None
+            else:
+                self.client = Groq(api_key=api_key)
+            self.model = "whisper-large-v3-turbo"
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to initialize Groq client: {str(e)}")
+            self.client = None
     
     def transcribe_audio(
         self,
@@ -27,6 +36,10 @@ class GroqTranscriber:
         Returns:
             Transcribed text in Arabic
         """
+        
+        if self.client is None:
+            print("❌ Cannot transcribe: Groq client not initialized")
+            return "عذراً، حدث خطأ في نظام التعرف على الصوت"
         
         try:
             transcription = self.client.audio.transcriptions.create(
@@ -46,7 +59,7 @@ class GroqTranscriber:
             
         except Exception as e:
             print(f"❌ Groq transcription error: {str(e)}")
-            return ""
+            return "عذراً، حدث خطأ في نظام التعرف على الصوت"
     
     def transcribe_audio_with_timestamps(
         self,
@@ -56,6 +69,10 @@ class GroqTranscriber:
         """
         Get transcription with word-level timestamps
         """
+        
+        if self.client is None:
+            print("❌ Cannot transcribe with timestamps: Groq client not initialized")
+            return {"text": "عذراً، حدث خطأ في نظام التعرف على الصوت", "words": []}
         
         try:
             transcription = self.client.audio.transcriptions.create(
@@ -71,4 +88,4 @@ class GroqTranscriber:
             
         except Exception as e:
             print(f"❌ Groq transcription error: {str(e)}")
-            return {"text": "", "words": []}
+            return {"text": "عذراً، حدث خطأ في نظام التعرف على الصوت", "words": []}

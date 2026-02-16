@@ -1,9 +1,16 @@
+from dotenv import load_dotenv
+load_dotenv()  # Load environment variables before any other imports
+
+import os
+from fastapi import FastAPI
+
+
 import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import agent, interview, scoring, analytics, vapi_webhook, transcription
+from app.api.routes import agent, interview, scoring, analytics, vapi_webhook, transcription, candidates
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,7 +39,8 @@ app.add_middleware(
 app.include_router(interview.router, prefix="/api/interview", tags=["interview"])
 app.include_router(scoring.router, prefix="/api/scoring", tags=["scoring"])
 app.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
-app.include_router(agent.router, prefix="/api", tags=["agent"])
+app.include_router(candidates.router, prefix="/api/candidates", tags=["candidates"])
+app.include_router(agent.router, prefix="/api/agent", tags=["agent"])
 app.include_router(vapi_webhook.router, prefix="/api", tags=["webhook"])
 app.include_router(transcription.router, prefix="/api", tags=["transcription"])
 
