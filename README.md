@@ -1,11 +1,12 @@
 <div align="center">
 
-# 🎙️ Sarah AI - Intelligent Recruitment for Qapalan Bakery
+# 🎙️ Sarah AI - Intelligent Recruitment for Golden Crust Bakery
 
-**Context-Aware Voice AI Agent for Credibility-Focused Interviews in Jordanian Arabic**
+**Zero-Hallucination Agentic Voice AI for Credibility-Focused Interviews in Jordanian Arabic**
 
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?style=for-the-badge&logo=fastapi)](https://fastapi.tiangolo.com/)
 [![Next.js](https://img.shields.io/badge/Frontend-Next.js-black?style=for-the-badge&logo=next.js)](https://nextjs.org/)
+[![LangGraph](https://img.shields.io/badge/Agent-LangGraph-4B32C3?style=for-the-badge)](https://github.com/langchain-ai/langgraph)
 [![Groq](https://img.shields.io/badge/LLM-Groq-FF5A00?style=for-the-badge)](https://groq.com/)
 [![Supabase](https://img.shields.io/badge/Database-Supabase-3ECF8E?style=for-the-badge&logo=supabase)](https://supabase.io/)
 
@@ -13,28 +14,35 @@
 
 ## 📋 Project Overview
 
-Sarah AI is a sophisticated voice agent that conducts context-aware interviews in Jordanian Arabic for Golden Crust Bakery. The system enhances the recruitment process by comparing candidates' registration form data with their live interview responses, detecting inconsistencies in real-time, and providing credibility scoring to help HR teams make better hiring decisions.
+Sarah AI is a sophisticated agentic voice assistant that conducts zero-hallucination interviews in Jordanian Arabic for Golden Crust Bakery. Built on a custom LangGraph architecture, the system enforces immutable fact contracts to prevent hallucinations and ensures strict adherence to Jordanian dialect. The system enhances the recruitment process by comparing candidates' registration form data with their live interview responses, detecting inconsistencies in real-time, and providing credibility scoring to help HR teams make better hiring decisions.
 
 ## ✨ Key Features
 
+- 🔒 **Immutable Fact Contracts:** Zero-hallucination guarantee through cryptographic verification
 - 🎙️ **Groq STT Integration:** 99% accurate Arabic transcription using Whisper-large-v3-turbo
-- 🧠 **Context-Aware Brain:** Uses pre-interview registration data to build personalized questions
-- ⚖️ **Credibility Scorer:** Real-time inconsistency detection between form data and transcript
-- 🇯🇴 **Localized Tone:** Friendly Jordanian/Levantine dialect with natural conversation flow
+- 🧠 **LangGraph State Machine:** Multi-stage interview flow with fact verification at every step
+- ⚖️ **Triple-Verification System:** Fact checking, persona enforcement, and language validation
+- 🇯🇴 **Strict Jordanian Dialect:** Enforced Ammiya dialect with MSA→Jordanian conversion
 - 📊 **HR Dashboard:** Real-time visual progress and credibility alerts during interviews
 
 ## 🏗️ Architecture
 
 ```mermaid
 flowchart LR
-    A[Frontend - Next.js] -->|WebRTC Audio| B[Backend - FastAPI]
+    A[Frontend - Next.js] -->|WebSocket Audio| B[Backend - FastAPI]
     B -->|Audio| C[Groq Whisper STT]
-    C -->|Arabic Text| D[Intelligent Agent]
-    D -->|Context-Aware Response| E[ElevenLabs TTS]
-    F[(Supabase DB)] -->|Registration Form| D
+    C -->|Arabic Text| D[LangGraph Engine]
+    D -->|Verified Response| E[ElevenLabs TTS]
+    F[(Supabase DB)] -->|Immutable Contract| D
     D -->|Inconsistencies| F
     E -->|Audio Response| A
-    G[Credibility Scorer] -->|Credibility Assessment| F
+    
+    subgraph "LangGraph Engine"
+      L1[Context Loader] --> L2[Response Generator]
+      L2 --> L3[Fact Verifier]
+      L3 --> L4[Persona Enforcer]
+      L4 --> L5[Stage Manager]
+    end
 ```
 
 ## 🧱 Project Structure
@@ -44,6 +52,11 @@ flowchart LR
 ├── backend/           # FastAPI (Python)
 │   ├── app/
 │   │   ├── api/       # API routes
+│   │   │   └── websocket/  # WebSocket handlers
+│   │   ├── core/      # LangGraph agentic components
+│   │   │   ├── fact_contract.py  # Immutable contracts
+│   │   │   ├── persona_enforcer.py  # Dialect enforcement
+│   │   │   └── interview_agent.py  # LangGraph state machine
 │   │   ├── models/    # Pydantic models
 │   │   ├── services/  # Business logic
 │   │   └── db/        # Database connections
@@ -117,8 +130,11 @@ This project is proprietary and confidential. © 2026 Golden Crust Bakery.
 | **Backend** | FastAPI | High-performance Python API framework |
 | **Database** | Supabase | PostgreSQL database with real-time capabilities |
 | **Speech-to-Text** | Groq Whisper | High-accuracy Arabic transcription |
-| **LLM** | Groq Llama-3 | Context-aware interview agent |
+| **Agent Framework** | LangGraph 0.2.16 | State machine for multi-stage verification |
+| **LLM** | Groq Llama-3 | Zero-hallucination interview agent |
 | **Text-to-Speech** | ElevenLabs | Natural Arabic voice synthesis |
+| **Communication** | WebSockets | Full-duplex real-time audio streaming |
+| **Validation** | Guardrails AI | Additional safety layer for LLM outputs |
 | **Deployment** | Docker | Containerized deployment with Docker Compose |
 
 ## 🔑 Environment Variables
@@ -128,10 +144,11 @@ This project is proprietary and confidential. © 2026 Golden Crust Bakery.
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_KEY` | Supabase service role key |
 | `GROQ_API_KEY` | Groq API key for STT and LLM |
-| `OPENAI_API_BASE` | Groq API base URL |
-| `GEMINI_API_KEY` | Google Gemini API key (fallback) |
+| `OPENAI_API_KEY` | OpenAI API key for LangGraph engine |
+| `ELEVENLABS_API_KEY` | ElevenLabs API key (backend) |
 | `NEXT_PUBLIC_ELEVENLABS_API_KEY` | ElevenLabs API key (frontend) |
 | `NEXT_PUBLIC_SUPABASE_*` | Supabase client credentials |
+| `LANGGRAPH_TRACING_V2` | Enable LangGraph tracing (optional) |
 
 ## 🚀 Key Routes
 
@@ -144,16 +161,18 @@ This project is proprietary and confidential. © 2026 Golden Crust Bakery.
 
 **Backend API:**
 - `POST /api/transcribe` - Groq Whisper transcription endpoint
-- `POST /api/agent-response` - Context-aware intelligent agent
-- `POST /api/interview/start` - Initialize interview session
-- `POST /api/vapi-webhook` - End-of-call webhook with credibility scoring
+- `POST /api/interview/start` - Initialize interview session with fact contract
+- `WebSocket /ws/interview/{candidate_id}` - Real-time interview with LangGraph agent
+- `POST /api/interview/summary` - Generate interview summary with credibility assessment
 
 ## 📊 Credibility Scoring
 
 Sarah AI features a sophisticated credibility scoring system that:
 
-1. Compares registration form data with interview responses
-2. Detects inconsistencies in real-time during the interview
-3. Flags potential misrepresentations with severity ratings
-4. Provides HR staff with a comprehensive credibility assessment
-5. Stores inconsistencies for future reference and pattern analysis
+1. Creates immutable fact contracts from candidate registration data
+2. Verifies every LLM response against the fact contract before delivery
+3. Detects inconsistencies in real-time during the interview
+4. Auto-corrects hallucinated facts before they reach the candidate
+5. Flags potential misrepresentations with severity ratings
+6. Provides HR staff with a comprehensive credibility assessment
+7. Stores inconsistencies for future reference and pattern analysis

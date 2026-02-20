@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { createSupabaseClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
+import Vapi from "@vapi-ai/web";
+
+
 
 interface RegistrationForm {
   full_name?: string;
@@ -43,7 +46,7 @@ export default function InterviewPage() {
   const [candidate, setCandidate] = useState<Candidate | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [callStatus, setCallStatus] = useState<
-    "ready" | "recording" | "processing" | "completed" | "analyzing"
+    "ready" | "live" | "processing" | "completed" | "analyzing"
   >("ready");
   const [transcript, setTranscript] = useState<{ role: string; text: string }[]>(
     []
@@ -55,10 +58,11 @@ export default function InterviewPage() {
   const [registrationForm, setRegistrationForm] = useState<any>(null);
   const [loadingContext, setLoadingContext] = useState(true);
   
-  // Audio recording refs
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const audioContextRef = useRef<AudioContext | null>(null);
+  // Vapi refs
+  const vapiCallRef = useRef<any>(null);
+  const vapiAssistantIdRef = useRef<string>(process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID || "");
+  const vapiApiKeyRef = useRef<string>(process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY || "");
+  const vapiContainerRef = useRef<HTMLDivElement>(null);
 
   // Fetch registration context from the new endpoint
   useEffect(() => {
@@ -135,44 +139,21 @@ export default function InterviewPage() {
     fetchCandidate();
   }, [candidateId]);
 
-  // Initialize audio context (client-side only)
+  // Clean up Vapi call on unmount
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-    }
-    
     return () => {
-      // Clean up any active recording on unmount
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-        mediaRecorderRef.current.stop();
+      // Clean up any active call on unmount
+      if (vapiCallRef.current && typeof vapiCallRef.current.destroy === 'function') {
+        vapiCallRef.current.destroy();
       }
     };
   }, []);
 
-  const startRecording = async () => {
+  const startInterview = async () => {
     if (!candidate) return;
     setError(null);
     
     try {
-      // Request microphone access
-      let micStream: MediaStream | null = null;
-      try {
-        micStream = await navigator.mediaDevices.getUserMedia({ 
-          audio: {
-            channelCount: 1,
-            sampleRate: 16000,
-            echoCancellation: true,
-            noiseSuppression: true
-          } 
-        });
-      } catch (micErr) {
-        const msg = micErr instanceof Error ? micErr.message : "Microphone access denied";
-        setCallStatus("ready");
-        setError("Microphone access is required. Please allow the microphone and try again.");
-        toast.error("Please allow microphone access");
-        return;
-      }
-      
       // Initialize the interview session
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
       const startRes = await fetch(`${apiUrl}/api/interview/start`, {
@@ -180,166 +161,114 @@ export default function InterviewPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ candidate_id: candidate.id }),
       });
+      
       const startData = await startRes.json();
       if (startData.interview_id) {
         setInterviewId(startData.interview_id);
         interviewIdRef.current = startData.interview_id;
+      } else {
+        throw new Error("Failed to initialize interview session");
       }
       
-      // Start recording
-      mediaRecorderRef.current = new MediaRecorder(micStream, {
-        mimeType: 'audio/webm;codecs=opus'
-      });
+      // Initialize Vapi call
+      const assistantId = vapiAssistantIdRef.current;
+      if (!assistantId) {
+        throw new Error("Missing Vapi Assistant ID");
+      }
       
-      audioChunksRef.current = [];
+      // Clear previous transcript
+      setTranscript([]);
       
-      mediaRecorderRef.current.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
+      try {
+        // Initialize Vapi exactly as specified in the requirements
+        const vapi = new Vapi(process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY!);
+        
+        // Start the call with the assistant ID
+        const call = await vapi.start(assistantId);
+        
+        // Save call reference
+        vapiCallRef.current = call;
+        
+        // Update UI
+        setCallStatus("live");
+        toast.success("Live call started");
+      } catch (err) {
+        console.error("Error starting Vapi call:", err);
+        setError("Failed to start call: " + (err instanceof Error ? err.message : String(err)));
+        setCallStatus("ready");
+        toast.error("Failed to start call");
+      }
       
-      mediaRecorderRef.current.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        await processAudio(audioBlob);
-      };
-      
-      mediaRecorderRef.current.start();
-      setCallStatus("recording");
-      toast.success("Recording started");
-      
-      // Auto-stop after 10 seconds (or add manual stop button)
-      setTimeout(() => {
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-          stopRecording();
-        }
-      }, 10000);
+      // Note: The actual call reference and status updates are handled in the setTimeout callback
       
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to start recording";
+      const msg = err instanceof Error ? err.message : "Failed to start interview";
       setCallStatus("ready");
       setError(msg);
       toast.error(msg);
     }
   };
   
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-      mediaRecorderRef.current.stop();
+  const stopInterview = () => {
+    try {
+      // First check if we have a reference to the call
+      if (vapiCallRef.current) {
+        // Try the stop() method first (correct for v2.5.2)
+        if (typeof vapiCallRef.current.stop === 'function') {
+          vapiCallRef.current.stop();
+        } 
+        // Fall back to destroy() if stop doesn't exist
+        else if (typeof vapiCallRef.current.destroy === 'function') {
+          vapiCallRef.current.destroy();
+        } 
+        // Last resort - just log a warning
+        else {
+          console.warn('No stop or destroy method found on Vapi call reference');
+        }
+      }
+      
+      // Clear reference regardless
+      vapiCallRef.current = null;
       setCallStatus("processing");
-      toast.info("Processing audio...");
+      toast.info("Ending call...");
+    } catch (error) {
+      console.error("Error stopping interview:", error);
+      // Still clear reference and update UI even if there's an error
+      vapiCallRef.current = null;
+      setCallStatus("processing");
     }
   };
   
-  const processAudio = async (audioBlob: Blob) => {
-    try {
-      // Step 1: Transcribe with Groq Whisper
-      const formData = new FormData();
-      formData.append('audio', audioBlob, 'recording.webm');
-      
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
-      const transcribeResponse = await fetch(`${apiUrl}/api/transcribe`, {
-        method: 'POST',
-        body: formData
-      });
-      
-      const transcribeData = await transcribeResponse.json();
-      const userText = transcribeData.text;
-      
-      console.log('✅ Transcription:', userText);
-      setTranscript(prev => [...prev, { role: "You", text: userText }]);
-      
-      // Step 2: Get intelligent response from agent
-      const agentResponse = await fetch(`${apiUrl}/api/agent-response`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: {
-            type: 'conversation-update',
-            call: {
-              assistantOverrides: {
-                variableValues: {
-                  candidate_name: candidate.full_name,
-                  target_role: candidate.target_role,
-                  candidate_id: candidate.id
-                }
-              }
-            },
-            transcript: [
-              ...transcript.map(t => ({ role: t.role === "You" ? "user" : "assistant", content: t.text })),
-              { role: "user", content: userText }
-            ]
-          }
-        })
-      });
-      
-      const agentData = await agentResponse.json();
-      const sarahResponse = agentData.assistant?.say || "I'm sorry, I didn't catch that.";
-      
-      // Check for inconsistencies
-      if (agentData.detected_inconsistencies && agentData.detected_inconsistencies.length > 0) {
-        const newInconsistency = agentData.detected_inconsistencies[agentData.detected_inconsistencies.length - 1];
-        setDetectedInconsistencies(prev => [...prev, newInconsistency]);
-        setShowInconsistencyAlert(true);
-        
-        // Auto-hide the alert after 5 seconds
-        setTimeout(() => {
-          setShowInconsistencyAlert(false);
-        }, 5000);
-      }
-      
-      console.log('✅ Sarah:', sarahResponse);
-      setTranscript(prev => [...prev, { role: "Sara", text: sarahResponse }]);
-      
-      // Step 3: Convert to speech with ElevenLabs
-      await speakText(sarahResponse);
-      
-      setCallStatus("ready");
-      
-    } catch (error) {
-      console.error('Error processing audio:', error);
-      setCallStatus("ready");
-      setError("Failed to process audio. Please try again.");
-      toast.error("Processing failed");
-    }
-  };
+  // No longer needed - Vapi handles audio processing
   
-  const speakText = async (text: string) => {
-    try {
-      const elevenlabsApiKey = process.env.NEXT_PUBLIC_ELEVENLABS_API_KEY;
-      if (!elevenlabsApiKey) {
-        console.error("Missing ElevenLabs API key");
-        return;
-      }
-      
-      const response = await fetch('https://api.elevenlabs.io/v1/text-to-speech/pNInz6obpgDQGcFmaJgB', {
-        method: 'POST',
-        headers: {
-          'xi-api-key': elevenlabsApiKey,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          text: text,
-          model_id: 'eleven_multilingual_v2',
-          voice_settings: {
-            stability: 0.65,
-            similarity_boost: 0.85
-          }
-        })
-      });
-      
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-      
-      const audio = new Audio(audioUrl);
-      await audio.play();
-      
-    } catch (error) {
-      console.error('Error playing audio:', error);
-    }
-  };
+  // No longer needed - Vapi handles TTS
   
   const endInterview = () => {
+    try {
+      // Stop the call if it's still active
+      if (vapiCallRef.current) {
+        // Try the stop() method first (correct for v2.5.2)
+        if (typeof vapiCallRef.current.stop === 'function') {
+          vapiCallRef.current.stop();
+        } 
+        // Fall back to destroy() if stop doesn't exist
+        else if (typeof vapiCallRef.current.destroy === 'function') {
+          vapiCallRef.current.destroy();
+        } 
+        // Last resort - just log a warning
+        else {
+          console.warn('No stop or destroy method found on Vapi call reference');
+        }
+        
+        // Clear reference regardless
+        vapiCallRef.current = null;
+      }
+    } catch (error) {
+      console.error("Error ending interview:", error);
+      // Still clear reference even if there's an error
+      vapiCallRef.current = null;
+    }
+    
     setCallStatus("analyzing");
     toast.success("Interview completed. Thank you!");
     const ANALYSIS_DELAY_MS = 7000;
@@ -490,13 +419,16 @@ export default function InterviewPage() {
             <InconsistencyAlert inconsistency={detectedInconsistencies[detectedInconsistencies.length - 1]} />
           )}
 
+          {/* Vapi container - this is where the Vapi UI will be rendered */}
+          <div ref={vapiContainerRef} className="mt-8 w-full h-32 bg-gray-50 rounded-lg"></div>
+          
           {/* Call controls */}
           <div className="mt-8 flex flex-col items-center gap-4">
             {callStatus === "ready" && (
               <button
-                onClick={startRecording}
+                onClick={startInterview}
                 className="flex h-20 w-20 items-center justify-center rounded-full bg-green-500 text-white shadow-lg transition hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50"
-                aria-label="Start recording"
+                aria-label="Start interview"
               >
                 <svg
                   className="h-10 w-10"
@@ -507,20 +439,26 @@ export default function InterviewPage() {
                 </svg>
               </button>
             )}
-            {callStatus === "recording" && (
-              <button
-                onClick={stopRecording}
-                className="flex h-20 w-20 items-center justify-center rounded-full bg-red-500 text-white shadow-lg transition hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 disabled:opacity-50"
-                aria-label="Stop recording"
-              >
-                <svg
-                  className="h-10 w-10"
-                  fill="currentColor"
-                  viewBox="0 0 24 24"
+            {callStatus === "live" && (
+              <div className="flex flex-col items-center gap-3">
+                <div className="flex items-center justify-center gap-3">
+                  <div className="h-3 w-3 animate-pulse rounded-full bg-green-500"></div>
+                  <span className="text-sm font-medium text-green-600">Live Call</span>
+                </div>
+                <button
+                  onClick={stopInterview}
+                  className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500 text-white shadow-lg transition hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
+                  aria-label="End call"
                 >
-                  <path d="M6 6h12v12H6z" />
-                </svg>
-              </button>
+                  <svg
+                    className="h-8 w-8"
+                    fill="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5 11H7v-2h10v2z" />
+                  </svg>
+                </button>
+              </div>
             )}
             {transcript.length > 0 && callStatus === "ready" && (
               <button
@@ -540,8 +478,8 @@ export default function InterviewPage() {
             <p className="text-sm text-amber-600/80">
               {callStatus === "ready" && transcript.length === 0 && "Ready to Start — Tap to begin"}
               {callStatus === "ready" && transcript.length > 0 && "Ready for next question — Tap to speak"}
-              {callStatus === "recording" && "Recording... (auto-stops after 10s)"}
-              {callStatus === "processing" && "Processing your response..."}
+              {callStatus === "live" && "Live call in progress — Speak naturally"}
+              {callStatus === "processing" && "Ending call..."}
               {callStatus === "analyzing" && ""}
               {callStatus === "completed" && "Completed — Redirecting..."}
             </p>

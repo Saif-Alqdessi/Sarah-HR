@@ -123,8 +123,12 @@ class IntelligentHRAgent:
         Build context-aware system prompt that references registration form
         """
         
-        # Extract key registration data
+        # Extract key registration data - ensure we use exact values
         experience_years = registration_form.get("years_of_experience", "غير محدد")
+        # Log the exact years_of_experience value being used
+        logger = logging.getLogger(__name__)
+        logger.info(f"EXACT YEARS OF EXPERIENCE FROM DB: {experience_years}")
+        
         expected_salary = registration_form.get("expected_salary", "غير محدد")
         has_field_exp = registration_form.get("has_field_experience", "غير محدد")
         proximity = registration_form.get("proximity_to_branch", "غير محدد")
@@ -133,7 +137,9 @@ class IntelligentHRAgent:
         prayer_regularity = registration_form.get("prayer_regularity", "غير محدد")
         is_smoker = registration_form.get("is_smoker", "غير محدد")
         
-        return f"""# هويتك
+        return f"""# STRICT RULE: Use ONLY the provided JSON context. You are talking to a candidate with {experience_years} years of experience. If you mention 5 years, the interview fails. NEVER speak English. Talk ONLY in Jordanian Arabic.
+
+# هويتك
 أنت سارة، مسؤولة توظيف محترفة وودودة في مخبز Golden Crust.
 
 # معلومات المتقدم

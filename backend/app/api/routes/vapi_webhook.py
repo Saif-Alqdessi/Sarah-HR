@@ -41,6 +41,8 @@ async def vapi_webhook(request: Request):
 
     call = message.get("call", {})
     call_id = call.get("id")
+    metadata = call.get("metadata", {})
+    candidate_id = metadata.get("candidate_id")
     artifact = message.get("artifact", {})
     transcript = artifact.get("transcript") or ""
 
@@ -51,21 +53,44 @@ async def vapi_webhook(request: Request):
     try:
         supabase = get_supabase_client()
 
-        # Find interview by vapi_session_id
-        int_res = (
-            supabase.table("interviews")
-            .select("id, candidate_id")
-            .eq("vapi_session_id", call_id)
-            .execute()
-        )
-
-        if not int_res.data or len(int_res.data) == 0:
-            logger.warning("Webhook: no interview found for vapi_session_id=%s", call_id)
+        # Try to find interview by vapi_session_id
+        int_res = None
+        interview_id = None
+        
+        if call_id:
+            int_res = (
+                supabase.table("interviews")
+                .select("id, candidate_id")
+                .eq("vapi_session_id", call_id)
+                .execute()
+            )
+            
+            if int_res.data and len(int_res.data) > 0:
+                interview = int_res.data[0]
+                interview_id = interview["id"]
+                if not candidate_id:  # Use candidate_id from database if not in metadata
+                    candidate_id = interview["candidate_id"]
+        
+        # If no interview found by vapi_session_id but we have candidate_id in metadata
+        # Try to find the most recent interview for this candidate
+        if (not int_res or not int_res.data) and candidate_id:
+            logger.info("Webhook: using candidate_id from metadata: %s", candidate_id)
+            int_res = (
+                supabase.table("interviews")
+                .select("id")
+                .eq("candidate_id", candidate_id)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            
+            if int_res.data and len(int_res.data) > 0:
+                interview_id = int_res.data[0]["id"]
+        
+        if not interview_id or not candidate_id:
+            logger.warning("Webhook: no interview found for vapi_session_id=%s or candidate_id=%s", 
+                          call_id, candidate_id)
             return JSONResponse(content={"received": True, "warning": "no_interview"})
-
-        interview = int_res.data[0]
-        interview_id = interview["id"]
-        candidate_id = interview["candidate_id"]
 
         # Get target_role from candidate
         cand_res = (
