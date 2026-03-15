@@ -1,0 +1,229 @@
+# Sarah AI — Dry Run Guide
+
+## Step 0 — Environment Variables
+
+Create [backend/.env](file:///c:/Users/Admin/Desktop/HR%20Project/backend/.env) if it doesn't exist:
+
+```env
+# Required — interview won't work without these
+OPENAI_API_KEY=sk-...
+GROQ_API_KEY=gsk_...
+ELEVENLABS_API_KEY=...
+
+# Required — use Service Role Key (bypasses RLS)
+SUPABASE_URL=https://xxxx.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJ...   # Dashboard → Settings → API → service_role
+
+# Optional
+NEXT_PUBLIC_API_URL=http://localhost:8001
+NEXT_PUBLIC_WS_URL=ws://localhost:8001
+```
+
+> [!CAUTION]
+> Use the **Service Role Key**, not the `anon` key. The `anon` key will fail with RLS errors when inserting into `candidates` and `interviews`.
+
+---
+
+## Step 1 — Database Schema (one-time)
+
+Run this in the Supabase **SQL Editor** before the first test:
+
+```sql
+-- Add scoring columns if they don't exist yet
+ALTER TABLE interviews
+  ADD COLUMN IF NOT EXISTS credibility_score   INT,
+  ADD COLUMN IF NOT EXISTS credibility_level   TEXT,
+  ADD COLUMN IF NOT EXISTS recommendation      TEXT,
+  ADD COLUMN IF NOT EXISTS summary             TEXT,
+  ADD COLUMN IF NOT EXISTS scoring_details     JSONB,
+  ADD COLUMN IF NOT EXISTS detected_inconsistencies JSONB DEFAULT '[]'::jsonb;
+```
+
+---
+
+## Step 2 — Insert Test Candidate
+
+The `fact_contract_hash` must be computed with the exact same logic as [compute_hash()](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/core/fact_contract.py#39-52) in [fact_contract.py](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/core/fact_contract.py):
+- Fields (sorted alphabetically): `candidate_id`, `expected_salary`, `has_field_experience`, `years_of_experience`
+- `json.dumps(data, sort_keys=True)` → SHA-256 → first 12 hex chars
+
+Run in **Supabase SQL Editor**:
+
+```sql
+-- Enable pgcrypto if not already enabled
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- Insert test candidate (fixed UUID so it's reproducible)
+INSERT INTO candidates (
+    id,
+    full_name,
+    phone_number,
+    email,
+    target_role,
+    years_of_experience,
+    expected_salary,
+    has_field_experience,
+    proximity_to_branch,
+    can_start_immediately,
+    academic_status,
+    application_source
+)
+VALUES (
+    'TEST-AHMAD-001',
+    'Ahmad Developer',
+    '+962790000001',
+    'ahmad.dev@test.com',
+    'baker',
+    3,
+    800,
+    true,
+    'قريب (أقل من 5 كم)',
+    'نعم',
+    'طالب جامعي',
+    'dry_run_test'
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- Verify the row was inserted
+SELECT id, full_name, years_of_experience, expected_salary FROM candidates
+WHERE id = 'TEST-AHMAD-001';
+```
+
+> [!NOTE]
+> The `fact_contract_hash` is computed **live** in Python at interview start — you don't need to store it in `candidates`. The hash is generated fresh from the DB row values each time a WebSocket session opens.
+
+---
+
+## Step 3 — Launch Backend
+
+```bash
+cd "c:\Users\Admin\Desktop\HR Project\backend"
+
+# Install dependencies (first time only)
+pip install -r requirements.txt
+
+# Start FastAPI on port 8001
+uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+```
+
+**Confirm it's running** — open in browser:
+```
+http://localhost:8001/docs
+```
+You should see the Swagger UI with `/api/candidates/{id}`, `/api/interview/start`, and `/ws/interview/{id}`.
+
+---
+
+## Step 4 — Launch Frontend
+
+```bash
+cd "c:\Users\Admin\Desktop\HR Project\frontend"
+
+# Install dependencies (first time only)
+npm install
+
+# Start Next.js dev server on port 3000
+npm run dev
+```
+
+Open: `http://localhost:3000`
+
+---
+
+## Step 5 — Navigate to the Interview Page
+
+```
+http://localhost:3000/interview/TEST-AHMAD-001
+```
+
+The page will:
+1. Fetch candidate data from `GET /api/candidates/TEST-AHMAD-001`
+2. Show registration context panel with Ahmad's form data
+3. Display the green **Start** button (microphone icon)
+
+---
+
+## Step 6 — Test Scenarios
+
+Click **Start** and wait for Sarah's opening greeting to play (in Jordanian Arabic).
+
+---
+
+### Scenario A — Honest Candidate (Baseline)
+
+Say exactly what's in the contract. Sarah's credibility score should stay near 100.
+
+> 🎤 "أهلاً سارة، اسمي أحمد. عندي 3 سنين خبرة، والراتب اللي بتوقعه 800 دينار."
+
+**Expected behavior**: Sarah asks a follow-up experience question, score stays at 100, no inconsistency logged.
+
+---
+
+### Scenario B — The Lie (Fact Integrity Test)
+
+Deliberately contradict the contract. Sarah's [_verify_facts_node](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/core/interview_agent.py#194-228) should catch this if Sarah herself says the wrong number, OR a `detected_inconsistency` should be logged if the user's claim differs from the contract.
+
+> 🎤 "والله أنا عندي 10 سنين خبرة في هالمجال."
+
+**Expected behavior**:
+- If Sarah's *response* repeats "10 years" → [verify_facts](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/core/interview_agent.py#194-228) corrects it back to "3 سنوات" and logs a `llm_hallucination` inconsistency.
+- The [credibility_score](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/services/credibility_scorer.py#214-227) drops −10 points.
+- After the interview ends, Supabase `interviews.recommendation` should show **"يحتاج تحقق إضافي"** (needs verification).
+
+---
+
+### Scenario C — Persona / Language Test
+
+Switch to English or Formal Arabic (فصحى) to trigger Sarah's dialect enforcement.
+
+> 🎤 (English) "Hello Sarah, my name is Ahmad and I have 3 years of experience."
+
+> 🎤 (فصحى) "مرحباً سارة، لديّ ثلاث سنوات من الخبرة في هذا المجال."
+
+**Expected behavior**: Sarah responds **entirely in Jordanian Arabic** with informal pronouns (شو، ليش، كيفك، والله). If she slips into `لديّ` or English, the [PersonaEnforcer](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/core/persona_enforcer.py#11-134) catches and corrects it before the TTS call.
+
+---
+
+## Step 7 — Supabase Verification Queries
+
+Run after finishing an interview:
+
+```sql
+-- Check interview record was created and scored
+SELECT
+    id,
+    status,
+    started_at,
+    completed_at,
+    duration_seconds,
+    credibility_score,
+    credibility_level,
+    recommendation,
+    summary,
+    jsonb_array_length(transcript)  AS transcript_turns,
+    jsonb_array_length(detected_inconsistencies) AS inconsistency_count
+FROM interviews
+ORDER BY created_at DESC
+LIMIT 5;
+
+-- Inspect transcript detail
+SELECT
+    id,
+    jsonb_pretty(transcript) AS transcript_pretty
+FROM interviews
+ORDER BY created_at DESC
+LIMIT 1;
+```
+
+---
+
+## Quick Troubleshooting
+
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| `404` on `/api/candidates/TEST-AHMAD-001` | Row not inserted or RLS blocking | Verify SQL insert ran; use Service Role Key |
+| `WebSocket Connection Failed` | Backend not running or wrong port | Check `uvicorn` is on `8001`; check `NEXT_PUBLIC_WS_URL` |
+| `Contract integrity check failed` | Hash mismatch in [verify_integrity()](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/core/fact_contract.py#56-75) | Should be auto-generated; restart the backend to clear LangGraph state |
+| Sarah speaks English | [PersonaEnforcer](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/core/persona_enforcer.py#11-134) not catching it | Check `OPENAI_API_KEY` is loaded; check LangGraph is using [enforce_persona](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/core/interview_agent.py#229-250) node |
+| No audio from Sarah | ElevenLabs key missing or quota exceeded | Verify `ELEVENLABS_API_KEY`; check ElevenLabs dashboard for quota |
+| `row-level security` error in logs | Using `anon` key instead of service role | Switch `SUPABASE_SERVICE_ROLE_KEY` in [.env](file:///c:/Users/Admin/Desktop/HR%20Project/.env) |

@@ -73,23 +73,12 @@ async def get_registration_context(candidate_id: str):
     try:
         supabase = get_supabase_client()
         
-        # Try RPC function first
-        try:
-            result = supabase.rpc('get_registration_context', {
-                'p_candidate_id': candidate_id
-            }).execute()
-            if result.data:
-                logger.info(f"✅ Loaded registration context via RPC for {candidate_id}")
-                return result.data
-        except Exception as rpc_error:
-            logger.warning(f"RPC not available, using fallback: {rpc_error}")
-        
-        # Fallback: direct query
+        # Direct query — no RPC (the old RPC function still references full_name_ar)
         result = supabase.table("candidates").select(
-            "full_name_ar, years_of_experience, expected_salary, "
+            "full_name, years_of_experience, expected_salary, "
             "has_field_experience, proximity_to_branch, academic_status, "
             "can_start_immediately, prayer_regularity, is_smoker, "
-            "desired_job_title, has_relatives_at_company, age_range, "
+            "target_role, has_relatives_at_company, age_range, "
             "nationality, grooming_objection, social_security_issues, "
             "registration_form_data"
         ).eq("id", candidate_id).execute()

@@ -14,16 +14,22 @@
 
 ## 📋 Project Overview
 
-Sarah AI is a sophisticated agentic voice assistant that conducts zero-hallucination interviews in Jordanian Arabic for Golden Crust Bakery. Built on a custom LangGraph architecture, the system enforces immutable fact contracts to prevent hallucinations and ensures strict adherence to Jordanian dialect. The system enhances the recruitment process by comparing candidates' registration form data with their live interview responses, detecting inconsistencies in real-time, and providing credibility scoring to help HR teams make better hiring decisions.
+Sarah AI is a sophisticated agentic voice assistant that conducts zero-hallucination interviews in Jordanian Arabic for Golden Crust Bakery (مخبز قبلان). Built on a custom **LangGraph state machine**, the system enforces immutable fact contracts to prevent hallucinations and ensures strict adherence to Jordanian dialect (عامية أردنية).
+
+The system conducts a structured **6-category interview** covering: Communication, Learning Ability, Stability, Credibility, Adaptability, and Job Knowledge — then scores candidates using a real-time credibility engine that compares registration form data against live interview responses.
 
 ## ✨ Key Features
 
-- 🔒 **Immutable Fact Contracts:** Zero-hallucination guarantee through cryptographic verification
-- 🎙️ **Groq STT Integration:** 99% accurate Arabic transcription using Whisper-large-v3-turbo
-- 🧠 **LangGraph State Machine:** Multi-stage interview flow with fact verification at every step
-- ⚖️ **Triple-Verification System:** Fact checking, persona enforcement, and language validation
-- 🇯🇴 **Strict Jordanian Dialect:** Enforced Ammiya dialect with MSA→Jordanian conversion
-- 📊 **HR Dashboard:** Real-time visual progress and credibility alerts during interviews
+- 🔒 **Immutable Fact Contracts** — Zero-hallucination guarantee through contract-locked responses
+- 🎙️ **Groq Whisper STT** — 99% accurate Arabic transcription (Whisper-large-v3-turbo)
+- 🧠 **8-Node LangGraph Pipeline** — load_context → validate_answer → select_question → generate_response → verify_facts → enforce_persona → check_stage_transition → score_credibility
+- 🔒 **Turn-Lock Mutex** — Prevents simultaneous question processing; discards audio while Sarah is thinking
+- 💾 **Memory-First Architecture** — All DB writes are non-blocking background tasks; interview never hangs on Supabase
+- 🔇 **Aggressive VAD** — Two-layer noise filter (audio size + transcript quality) kills keyboard clicks and Whisper hallucinations
+- ⚖️ **Triple-Verification** — Fact checking, persona enforcement, and language validation on every turn
+- 🇯🇴 **Strict Jordanian Dialect** — Enforced Ammiya with MSA→Jordanian conversion
+- 📊 **6-Category Question Bank** — Database-driven questions across 6 mandatory categories
+- 🧮 **Real-Time Credibility Scoring** — Per-turn scoring with final assessment and recommendation
 
 ## 🏗️ Architecture
 
@@ -34,48 +40,58 @@ flowchart LR
     C -->|Arabic Text| D[LangGraph Engine]
     D -->|Verified Response| E[ElevenLabs TTS]
     F[(Supabase DB)] -->|Immutable Contract| D
-    D -->|Inconsistencies| F
+    D -.->|Background Task| F
     E -->|Audio Response| A
     
-    subgraph "LangGraph Engine"
-      L1[Context Loader] --> L2[Response Generator]
-      L2 --> L3[Fact Verifier]
-      L3 --> L4[Persona Enforcer]
-      L4 --> L5[Stage Manager]
+    subgraph "LangGraph Engine (8 Nodes)"
+      L1[Context Loader] --> L1b[Answer Validator]
+      L1b --> L2[Question Selector]
+      L2 --> L3[Response Generator]
+      L3 --> L4[Fact Verifier]
+      L4 --> L5[Persona Enforcer]
+      L5 --> L6[Stage Manager]
+      L6 --> L7[Credibility Scorer]
     end
 ```
 
 ## 🧱 Project Structure
 
 ```
-├── frontend/          # Next.js 14 (App Router) + Tailwind CSS
-├── backend/           # FastAPI (Python)
+├── frontend/              # Next.js 14 (App Router) + Tailwind CSS
+├── backend/               # FastAPI (Python)
 │   ├── app/
-│   │   ├── api/       # API routes
-│   │   │   └── websocket/  # WebSocket handlers
-│   │   ├── core/      # LangGraph agentic components
-│   │   │   ├── fact_contract.py  # Immutable contracts
-│   │   │   ├── persona_enforcer.py  # Dialect enforcement
-│   │   │   └── interview_agent.py  # LangGraph state machine
-│   │   ├── models/    # Pydantic models
-│   │   ├── services/  # Business logic
-│   │   └── db/        # Database connections
-├── docker-compose.yml # Orchestrates both services
-├── .env.example       # Environment template (copy to .env)
-└── ARCHITECTURE.md    # Full technical specification
+│   │   ├── api/
+│   │   │   ├── routes/        # REST endpoints (candidates, interview)
+│   │   │   └── websocket/     # WebSocket handler (bulletproof turn-lock)
+│   │   ├── core/
+│   │   │   ├── interview_agent.py   # LangGraph 8-node state machine
+│   │   │   ├── fact_contract.py     # Immutable fact contracts
+│   │   │   ├── persona_enforcer.py  # Jordanian dialect enforcement
+│   │   │   ├── llm_manager.py       # Multi-provider LLM (Groq → OpenAI)
+│   │   │   └── fallback_responses.py
+│   │   ├── models/
+│   │   │   └── candidate.py   # Arabic-first Pydantic models
+│   │   ├── services/
+│   │   │   ├── groq_transcriber.py    # Bulletproof STT (str-safe)
+│   │   │   ├── elevenlabs_tts.py      # TTS with text fallback
+│   │   │   ├── credibility_scorer.py  # Per-turn + final scoring
+│   │   │   └── question_selector.py   # 6-category DB question bank
+│   │   └── db/
+│   │       └── supabase_client.py     # Singleton with extended timeout
+├── docker-compose.yml
+├── .env.example
+└── README.md
 ```
 
 ## 🚀 Quick Start
 
 ### 1. Environment Setup
 
-Copy the environment template and fill in your values:
-
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your Supabase, Groq, and ElevenLabs API keys.
+Edit `.env` with your Supabase, Groq, ElevenLabs, and OpenAI API keys.
 
 ### 2. Run with Docker Compose
 
@@ -84,8 +100,8 @@ docker-compose up --build
 ```
 
 - **Frontend**: http://localhost:3000
-- **Backend API**: http://localhost:8000
-- **API Docs**: http://localhost:8000/docs
+- **Backend API**: http://localhost:8001
+- **API Docs**: http://localhost:8001/docs
 
 ### 3. Run Locally (Development)
 
@@ -93,7 +109,8 @@ docker-compose up --build
 ```bash
 cd backend
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+set PYTHONUTF8=1
+uvicorn app.main:app --port 8001 --reload
 ```
 
 **Frontend:**
@@ -108,8 +125,90 @@ npm run dev
 1. Register a candidate through the `/apply` form
 2. Access the interview page at `/interview/[candidateId]`
 3. Conduct a voice interview with Sarah AI
-4. Observe real-time inconsistency detection
+4. Watch the terminal for diagnostic logs:
+   ```
+   TURN 2 COMPLETE | stage: questioning → questioning | categories: 1/6 | history: 4 msgs
+   📊 stage=questioning | categories=2/6 | cat_idx=2 | history=6
+   Answer validation: VALID (8 words)
+   🔒 Turn-lock active — discarding audio chunk
+   BG upsert OK: abc-123 (6 turns)
+   ```
 5. Review the final credibility assessment in the HR dashboard
+
+## 🛠️ Tech Stack
+
+| Component | Technology | Description |
+|-----------|------------|-------------|
+| **Frontend** | Next.js 14 | React framework with App Router and Tailwind CSS |
+| **Backend** | FastAPI | High-performance Python API with WebSocket support |
+| **Database** | Supabase | PostgreSQL with extended httpx timeout (20s/30s) |
+| **Speech-to-Text** | Groq Whisper | Whisper-large-v3-turbo with Arabic dialect hints |
+| **Agent Framework** | LangGraph | 8-node state machine with answer validation |
+| **LLM** | Groq (Llama-3) → OpenAI fallback | Multi-provider with automatic failover |
+| **Text-to-Speech** | ElevenLabs | Arabic voice synthesis with text-only fallback |
+| **Communication** | WebSockets | Turn-locked full-duplex audio streaming |
+| **Scoring** | CredibilityScorer | Form vs. transcript comparison engine |
+| **Deployment** | Docker | Containerized with Docker Compose |
+
+## 🔑 Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_KEY` | Supabase anon key |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (bypasses RLS) |
+| `GROQ_API_KEY` | Groq API key for STT and LLM |
+| `OPENAI_API_KEY` | OpenAI API key (LLM fallback) |
+| `ELEVENLABS_API_KEY` | ElevenLabs API key (backend TTS) |
+| `NEXT_PUBLIC_ELEVENLABS_API_KEY` | ElevenLabs API key (frontend) |
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase URL for frontend |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key for frontend |
+
+## 🚀 Key Routes
+
+**Frontend:**
+| Route | Description |
+|-------|-------------|
+| `/apply` | Candidate registration form |
+| `/interview/[candidateId]` | Voice AI interview with Sarah |
+| `/dashboard` | HR dashboard with candidate overview |
+| `/dashboard/candidates/[id]` | Detailed profile + credibility report |
+| `/dashboard/analytics` | Interview analytics and insights |
+
+**Backend API:**
+| Endpoint | Description |
+|----------|-------------|
+| `POST /api/interview/start` | Create interview record (3x retry) |
+| `WS /ws/interview/{candidate_id}` | Real-time interview (turn-locked) |
+| `GET /api/candidates/{id}` | Fetch candidate data |
+| `GET /api/candidates/{id}/registration-context` | Candidate registration context |
+| `PATCH /api/interview/{id}/link` | Link external call ID |
+
+## 📊 Credibility Scoring
+
+Sarah AI features a real-time credibility scoring system:
+
+1. **Fact Contract Lock** — Creates immutable contracts from registration data
+2. **Per-Turn Verification** — Every LLM response is checked against the contract
+3. **Inconsistency Detection** — Flags contradictions between form and interview
+4. **Auto-Correction** — Hallucinated facts are corrected before reaching the candidate
+5. **6-Category Coverage** — Communication, Learning, Stability, Credibility, Adaptability, Knowledge
+6. **Final Assessment** — Comprehensive score (0–100) with recommendation and summary
+
+## 🛡️ Bulletproof Architecture
+
+The WebSocket handler is designed to **never crash** during an interview:
+
+| Feature | How It Works |
+|---------|-------------|
+| **Turn-Lock** | `is_processing` flag discards audio while Sarah is thinking |
+| **Memory-First** | Interview state lives in Python dict; DB writes are fire-and-forget |
+| **Background DB** | All Supabase calls use `asyncio.create_task()` — never block |
+| **VAD Layer 1** | Audio < 500 chars base64 → discarded before STT |
+| **VAD Layer 2** | Transcript < 5 chars or symbols-only → discarded before LangGraph |
+| **TTS Failover** | ElevenLabs fails → text-only fallback sent via WebSocket |
+| **60s Finalization** | Scoring + DB write run in background with timeout |
+| **Singleton Client** | Supabase connection reused across all requests |
 
 ## 📝 License
 
@@ -121,58 +220,4 @@ This project is proprietary and confidential. © 2026 Golden Crust Bakery.
 - [ElevenLabs](https://elevenlabs.io/) for natural Arabic TTS
 - [Supabase](https://supabase.io/) for database and authentication
 - [FastAPI](https://fastapi.tiangolo.com/) and [Next.js](https://nextjs.org/) for the application framework
-
-## 🛠️ Tech Stack
-
-| Component | Technology | Description |
-|-----------|------------|-------------|
-| **Frontend** | Next.js 14 | React framework with App Router and Tailwind CSS |
-| **Backend** | FastAPI | High-performance Python API framework |
-| **Database** | Supabase | PostgreSQL database with real-time capabilities |
-| **Speech-to-Text** | Groq Whisper | High-accuracy Arabic transcription |
-| **Agent Framework** | LangGraph 0.2.16 | State machine for multi-stage verification |
-| **LLM** | Groq Llama-3 | Zero-hallucination interview agent |
-| **Text-to-Speech** | ElevenLabs | Natural Arabic voice synthesis |
-| **Communication** | WebSockets | Full-duplex real-time audio streaming |
-| **Validation** | Guardrails AI | Additional safety layer for LLM outputs |
-| **Deployment** | Docker | Containerized deployment with Docker Compose |
-
-## 🔑 Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `SUPABASE_URL` | Supabase project URL |
-| `SUPABASE_KEY` | Supabase service role key |
-| `GROQ_API_KEY` | Groq API key for STT and LLM |
-| `OPENAI_API_KEY` | OpenAI API key for LangGraph engine |
-| `ELEVENLABS_API_KEY` | ElevenLabs API key (backend) |
-| `NEXT_PUBLIC_ELEVENLABS_API_KEY` | ElevenLabs API key (frontend) |
-| `NEXT_PUBLIC_SUPABASE_*` | Supabase client credentials |
-| `LANGGRAPH_TRACING_V2` | Enable LangGraph tracing (optional) |
-
-## 🚀 Key Routes
-
-**Frontend:**
-- `/apply` - Candidate registration form with detailed fields
-- `/interview/[candidateId]` - Context-aware voice AI interview with Sarah
-- `/dashboard` - HR dashboard with candidate overview
-- `/dashboard/candidates/[id]` - Detailed candidate profile with credibility assessment
-- `/dashboard/analytics` - Interview analytics and insights
-
-**Backend API:**
-- `POST /api/transcribe` - Groq Whisper transcription endpoint
-- `POST /api/interview/start` - Initialize interview session with fact contract
-- `WebSocket /ws/interview/{candidate_id}` - Real-time interview with LangGraph agent
-- `POST /api/interview/summary` - Generate interview summary with credibility assessment
-
-## 📊 Credibility Scoring
-
-Sarah AI features a sophisticated credibility scoring system that:
-
-1. Creates immutable fact contracts from candidate registration data
-2. Verifies every LLM response against the fact contract before delivery
-3. Detects inconsistencies in real-time during the interview
-4. Auto-corrects hallucinated facts before they reach the candidate
-5. Flags potential misrepresentations with severity ratings
-6. Provides HR staff with a comprehensive credibility assessment
-7. Stores inconsistencies for future reference and pattern analysis
+- [LangGraph](https://github.com/langchain-ai/langgraph) for the agentic state machine framework

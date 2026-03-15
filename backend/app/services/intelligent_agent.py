@@ -1,7 +1,22 @@
 """
-Intelligent HR Agent - Context-Aware Interview Conductor
-Provides context-aware responses that reference candidate's registration form data
+[DEPRECATED] Intelligent HR Agent - Context-Aware Interview Conductor
+
+This module is DEPRECATED. Use `app.core.interview_agent.InterviewAgent` instead.
+`InterviewAgent` is the canonical LangGraph-based implementation with:
+  - Immutable CandidateContract (fact locking)
+  - FactVerifier (anti-hallucination)
+  - PersonaEnforcer (Jordanian dialect guard)
+  - LangGraph state machine with persistent memory
+
+This class is kept for reference only and should NOT be used in new code.
 """
+
+import warnings
+warnings.warn(
+    "IntelligentHRAgent is deprecated. Use app.core.interview_agent.InterviewAgent instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 import openai
 import os
@@ -9,7 +24,10 @@ from typing import List, Dict, Any, Optional
 
 class IntelligentHRAgent:
     """
-    Context-aware interviewer that references registration form data
+    [DEPRECATED] Context-aware interviewer that references registration form data.
+
+    Use `app.core.interview_agent.InterviewAgent` for all new development.
+    This class is retained for reference and backward compatibility only.
     """
     
     def __init__(self):

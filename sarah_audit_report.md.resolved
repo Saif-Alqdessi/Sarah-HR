@@ -1,0 +1,278 @@
+# 🧠 Sarah - Agentic HR Interviewer: Initial Audit Report
+
+## Project Purpose
+
+**Sarah** is an AI-powered HR interviewing agent built for **Golden Crust Bakery** (Jordan). She conducts real-time **voice interviews in Jordanian Arabic** with job applicants who have pre-filled an online registration form. Her core value proposition is threefold:
+
+1. **Anti-hallucination**: She never invents facts about the candidate — all interview data is locked in an immutable contract loaded from Supabase.
+2. **Anti-inconsistency**: She detects when a candidate's verbal answers contradict their written registration form.
+3. **Persona fidelity**: She speaks exclusively in Jordanian Arabic dialect, not Modern Standard Arabic (MSA) or English.
+
+---
+
+## 1. Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────┐
+│                  FRONTEND (Next.js 14)               │
+│                                                     │
+│  Route Groups:                                      │
+│   (candidate)/  → Candidate-facing interview UI     │
+│   (hr)/         → HR dashboard (analytics/review)   │
+│                                                     │
+│  Hooks: useVoiceInterview (STUB) / useCandidates    │
+└──────────────────────┬──────────────────────────────┘
+                       │ WebSocket + REST
+┌──────────────────────▼──────────────────────────────┐
+│                  BACKEND (FastAPI)                   │
+│                                                     │
+│  REST Routes:  /api/interview  /api/scoring         │
+│                /api/analytics  /api/candidates      │
+│                /api/agent      /api/transcription   │
+│                                                     │
+│  WebSocket:   /ws/interview/{candidate_id}          │
+│                                                     │
+│  Core:        LangGraph interview_agent             │
+│               FactContract + FactVerifier           │
+│               PersonaEnforcer                       │
+│                                                     │
+│  Services:    GroqTranscriber (Whisper-v3-turbo)    │
+│               ElevenLabsTTS (eleven_multilingual_v2)│
+│               CredibilityScorer                     │
+│               IntelligentHRAgent (⚠️ duplicate)     │
+│                                                     │
+│  DB:          Supabase (service_role key, no RLS)   │
+└─────────────────────────────────────────────────────┘
+```
+
+| Layer | Technology | Key File |
+|-------|-----------|---------|
+| Backend API | FastAPI | [app/main.py](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/main.py) |
+| Agentic Logic | LangGraph | [app/core/interview_agent.py](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/core/interview_agent.py) |
+| Fact Locking | Pydantic frozen model | [app/core/fact_contract.py](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/core/fact_contract.py) |
+| Persona Guard | Regex + langdetect | [app/core/persona_enforcer.py](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/core/persona_enforcer.py) |
+| STT | Groq Whisper-large-v3-turbo | [app/services/groq_transcriber.py](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/services/groq_transcriber.py) |
+| LLM | OpenAI gpt-4o-mini | [app/core/interview_agent.py](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/core/interview_agent.py) |
+| TTS | ElevenLabs eleven_multilingual_v2 | [app/services/elevenlabs_tts.py](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/services/elevenlabs_tts.py) |
+| DB | Supabase (Postgres) | [app/db/supabase_client.py](file:///c:/Users/Admin/Desktop/HR%20Project/backend/app/db/supabase_client.py) |
+| Frontend | Next.js 14, TypeScript | `frontend/app/` |
+
+---
+
+## 2. Agentic Logic: LangGraph Pipeline
+
+The `InterviewAgent` in `app/core/interview_agent.py` defines a deterministic **5-node LangGraph state machine**:
+
+```mermaid
+graph LR
+    A[load_context] --> B[generate_response]
+    B --> C[verify_facts]
+    C --> D[enforce_persona]
+    D --> E[check_stage_transition]
+    E --> F((END))
+```
+
+### Node Responsibilities
+
+| Node | Role | What It Does |
+|------|------|-------------|
+| `load_context` | Guard | Verifies `CandidateContract` SHA256 hash — rejects if tampered |
+| `generate_response` | Brain | Calls `gpt-4o-mini` with a fact-injected prompt; `max_tokens=100` |
+| `verify_facts` | Anti-hallucination | Regex-scans LLM output for wrong numbers (experience years, salary). Auto-corrects and logs |
+| `enforce_persona` | Style guard | Converts MSA → Jordanian dialect; detects English words via regex + `langdetect` |
+| `check_stage_transition` | Flow control | Advances interview stage when `min_questions` threshold is reached |
+
+### Interview Stages (State Machine)
+
+```
+opening → experience_probe → credibility_check → closing
+  (1q)          (3q)               (2q)            (1q)
+```
+
+### The `CandidateContract` (Fact Locking)
+
+- A **Pydantic frozen model** — all fields immutable after creation.
+- Loaded once from Supabase at WebSocket connection start.
+- SHA256 hash computed over `candidate_id`, `years_of_experience`, `expected_salary`, `has_field_experience`.
+- `verify_integrity()` is called at every `load_context` node.
+
+> The hash is a 12-char truncation of SHA256 — lightweight but enough for tamper detection in this context.
+
+### The `PersonaEnforcer`
+
+- **Step 1:** Regex check for English patterns (common words, 4+ letter sequences).
+- **Step 2:** MSA → Jordanian dictionary replacement (e.g., `ماذا` → `شو`, `لماذا` → `ليش`).
+- **Step 3:** Checks for presence of ≥1 Jordanian marker word.
+- Called with `strict_mode=False` in the WebSocket pipeline — meaning English is **detected but not blocked**, only logged as a warning.
+
+---
+
+## 3. Data Flow: Real-Time Audio Pipeline
+
+```
+📱 Browser (Candidate)
+    │  {type: "audio", data: base64_audio}
+    │  WebSocket
+    ▼
+🔌 /ws/interview/{candidate_id}  [interview_ws.py]
+    │
+    ├─ 1. Load CandidateContract from Supabase (once)
+    │
+    └─ [Loop per turn]
+        │
+        ├─ 2. Decode base64 audio
+        │
+        ├─ 3. Groq STT (Whisper-large-v3-turbo, forced Arabic)
+        │       → transcript (Arabic text)
+        │
+        ├─ 4. CandidateLanguageMonitor (English check on candidate input)
+        │       → appends [SYSTEM_NOTE] to transcript if English detected
+        │
+        ├─ 5. LangGraph: InterviewAgent.process_turn()
+        │       → load_context → generate_response → verify_facts
+        │          → enforce_persona → check_stage_transition
+        │       → system_response (Arabic text)
+        │
+        ├─ 6. ElevenLabs TTS (eleven_multilingual_v2, base64 out)
+        │       → audio_response
+        │
+        ├─ 7. Send {type:"audio", data, metadata:{text,stage,turn}}
+        │
+        └─ 8. _update_interview_record() → Supabase upsert
+                (transcript[], detected_inconsistencies[])
+```
+
+---
+
+## 4. Supabase Integration
+
+| Table | Usage | Pattern |
+|-------|-------|---------|
+| `candidates` | Read-only — loads all candidate facts at session start | SELECT by `candidate_id` |
+| `interviews` | Write — created at session start, updated per turn, finalized on end | UPDATE transcript + inconsistencies |
+
+- Uses **service role key** (bypasses all Row Level Security) — appropriate for backend-only use.
+- The Supabase client is a singleton fetched via `get_supabase_client()` at `InterviewWebSocketHandler.__init__`.
+
+---
+
+## 5. Logical Gaps & Bugs Found 🐛
+
+### 🔴 Critical
+
+#### **BUG 1: Dual-Agent Architecture Conflict**
+- **`app/core/interview_agent.py`** (`InterviewAgent`) = LangGraph-based, uses `CandidateContract`, full pipeline
+- **`app/services/intelligent_agent.py`** (`IntelligentHRAgent`) = Plain OpenAI agent, no LangGraph, duplicates the same prompt logic
+- The WebSocket (`interview_ws.py`) correctly uses `InterviewAgent`, but the REST route `/api/agent` (`agent.py` - 14KB) almost certainly uses `IntelligentHRAgent`.
+- **Risk:** Two separate code paths doing the same job, getting out of sync. No single source of truth for prompts.
+
+#### **BUG 2: `process_turn()` Recompiles the LangGraph on Every Single Turn**
+```python
+# In interview_agent.py, process_turn():
+checkpointer = MemorySaver()
+app = self.workflow.compile(checkpointer=checkpointer)  # ← Called EVERY turn!
+final_state = app.invoke(current_state)
+```
+- `MemorySaver` is created fresh each turn — **state persistence is lost between turns**. The `MemorySaver` checkpoint has no memory of previous turns.
+- `workflow.compile()` is expensive and should only be done once at `__init__`.
+- **Impact:** The LangGraph checkpointing system is entirely broken. Turn-to-turn memory is only maintained because `conversation_history` is in `InterviewState`, not because of LangGraph's memory.
+
+#### **BUG 3: `_send_opening_message()` State Sync Error**
+```python
+# In interview_ws.py:
+updated_state = await self.agent.process_turn(contract, "", current_state=interview_state)
+opening_message = updated_state["latest_system_response"]  # ← 1st state copy
+# ...
+self.active_sessions[updated_state["interview_id"]] = updated_state  # ← updates session
+# But the main loop still uses the OLD interview_state (not updated_state)!
+interview_state = await self.agent.process_turn(...)  # ← Loop reassigns correctly, but first turn is already done
+```
+- The opening turn processes through LangGraph, updating `interview_state`, but the session is saved under `updated_state["interview_id"]` while the main loop references `interview_id` which may be different from `updated_state["interview_id"]` since `process_turn` reinitializes state if `current_state` is falsy.
+- **Impact:** The opening message's state changes (stage transition, question count) may not carry over into the main loop.
+
+#### **BUG 4: `GroqTranscriber` has no `transcribe()` async method**
+```python
+# interview_ws.py calls:
+transcript = await self.groq_stt.transcribe(audio_data)
+
+# But GroqTranscriber only defines:
+def transcribe_audio(self, audio_file: BinaryIO, ...) → str  # sync, different name
+```
+- The WebSocket handler calls `transcribe()` (non-existent, async) but `GroqTranscriber` only has `transcribe_audio()` (sync, different signature).
+- **Impact:** The entire STT step will throw `AttributeError` at runtime. The voice pipeline is currently broken.
+
+#### **BUG 5: `get_candidate` endpoint has undefined `get_supabase_client` reference**
+```python
+# main.py line 71:
+supabase = get_supabase_client()  # ← NOT imported!
+```
+- `get_supabase_client` is used in the `GET /api/candidates/{id}` route but is never imported in `main.py`.
+- **Impact:** Every call to that endpoint raises `NameError`.
+
+---
+
+### 🟡 Medium Priority
+
+#### **GAP 1: `useVoiceInterview` Hook is an Empty Stub**
+```typescript
+// frontend/hooks/useVoiceInterview.ts
+export function useVoiceInterview() {
+  return { start: () => {}, stop: () => {}, status: "idle" };
+}
+```
+- The frontend has NO actual WebSocket connection, microphone access, audio recording, or audio playback logic. The interview UI cannot function at all.
+
+#### **GAP 2: `interview_orchestrator.py` and `question_generator.py` are Empty Files**
+```
+app/services/interview_orchestrator.py  → 53 bytes (just a comment)
+app/services/question_generator.py     → 51 bytes (just a comment)
+app/services/sentiment_analyzer.py     → 29 bytes (just a comment)
+```
+- Placeholder files that are referenced conceptually (in `ARCHITECTURE.md`) but never implemented.
+
+#### **GAP 3: `FactVerifier.verify_integrity()` Hash Mismatch**
+- `compute_hash` (validator) hashes only 4 fields: `candidate_id`, `years_of_experience`, `expected_salary`, `has_field_experience`.
+- `verify_integrity()` hashes the **entire model dict** minus `contract_hash` and `contract_created_at`.
+- **Impact:** `verify_integrity()` will **always return `False`** because the stored hash is over 4 fields but re-checks all remaining fields. Every LangGraph turn will throw `ValueError: "Contract integrity check failed"`.
+
+#### **GAP 4: `PersonaEnforcer` English Regex Too Aggressive**
+- The pattern `r'\b[a-zA-Z]{4,}\b'` will flag any non-Arabic word with 4+ letters — including model names like `gpt`, job IDs, VAPI tokens, or any technical code embedded in logs.
+- `strict_mode=False` in the pipeline mitigates the blocking, but the violation is still logged as an error even when harmless.
+
+#### **GAP 5: VAPI Integration is Present but Disconnected**
+- `app/api/routes/vapi_webhook.py` (5.4KB) and `app/integrations/vapi_client.py` (6.4KB) exist.
+- No route for the VAPI webhook is registered in `main.py`.
+- **Impact:** VAPI is a dead code path — the webhook will never receive events.
+
+#### **GAP 6: Stage Transition Counting is Wrong**
+```python
+# In InterviewAgent._check_stage_transition_node():
+stage_questions = [q for q in questions_asked if q.startswith(current_stage)]
+```
+- Questions are tracked as `f"{stage}_q{index}"`. After a stage transition, `current_stage` changes, so old questions no longer match. This is fine for counting — **but**:
+- After transitioning from `opening` to `experience_probe`, the opening question `"opening_q0"` is still in `questions_asked`. The new stage `experience_probe` starts counting from 0. This is correct behavior — but a stage can jump prematurely if the question was added *after* the state already transitioned and the previous questions are miscounted.
+
+---
+
+### 🟢 Minor / Design Notes
+
+| # | Observation |
+|---|-------------|
+| 1 | `ElevenLabsTTS.synthesize()` is `async` but uses `requests.post()` (blocking sync). Should use `httpx.AsyncClient` to avoid blocking the event loop. |
+| 2 | `InterviewWebSocketHandler` creates one `InterviewAgent` instance but processes sessions concurrently — since `InterviewAgent` has no instance-level mutable state, this is currently safe, but risky if state is ever added. |
+| 3 | `FactContractLoader.get_fact_summary()` duplicates the system prompt logic already in `InterviewAgent._build_system_prompt()`. |
+| 4 | `CredibilityScorer` is well-implemented but has no endpoint calling it. `scoring.py` (909 bytes) likely doesn't wire it. |
+| 5 | `main.py` app title says "Golden Crust AI Recruiter API" but health check returns `architecture: "agentic_langgraph"` — minor inconsistency in branding. |
+| 6 | No `interview` record appears to be **created** in Supabase before `_update_interview_record()` does an UPDATE — if the row doesn't exist yet, the update silently does nothing. |
+
+---
+
+## Summary Table
+
+| Severity | Count | Items |
+|----------|-------|-------|
+| 🔴 Critical Bug | 5 | Dual-agent conflict, MemorySaver bug, state sync error, missing `transcribe()` method, missing import |
+| 🟡 Medium Gap | 6 | Empty frontend hook, placeholder services, hash mismatch in integrity check, VAPI disconnected, aggressive regex, stage count edge case |
+| 🟢 Minor | 6 | Blocking TTS call, concurrent safety, duplicate prompt logic, scorer not wired, branding, missing INSERT before UPDATE |
+
+**Bottom line:** The architecture and design are excellent — the concept of the `CandidateContract`, the LangGraph pipeline, and the hallucination-guard layer are all well-thought-out. However, **the voice pipeline is currently non-functional** due to the `transcribe()` method name mismatch (Bug 4) and the integrity check will always fail (Gap 3). These two need immediate fixes before any live testing is possible.

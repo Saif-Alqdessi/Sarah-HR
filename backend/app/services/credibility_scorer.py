@@ -1,23 +1,36 @@
 """
 Credibility Scorer - Form vs Interview Comparison
-Assesses candidate credibility by comparing registration form with interview transcript
+Assesses candidate credibility by comparing registration form data
+with the interview transcript. Uses MultiProviderLLM (Groq-first) so
+the scorer never touches OpenAI directly and never crashes the interview.
 """
 
-import openai
-import os
+import asyncio
+import concurrent.futures
 import json
+import logging
 from typing import Dict, List, Any
+
+logger = logging.getLogger(__name__)
 
 class CredibilityScorer:
     """
     Compares registration form answers with interview transcript
-    to assess candidate credibility (المصداقية)
+    to assess candidate credibility.
+    Uses Groq (via MultiProviderLLM) so OpenAI quota errors never crash the scorer.
     """
-    
+
     def __init__(self):
-        self.model = "gpt-4o-mini"
-        openai.api_key = os.getenv("OPENAI_API_KEY")
-    
+        # Lazy-loaded — avoids import-time side-effects
+        self._llm = None
+
+    @property
+    def llm(self):
+        if self._llm is None:
+            from app.core.llm_manager import MultiProviderLLM
+            self._llm = MultiProviderLLM()
+        return self._llm
+
     def score_credibility(
         self,
         registration_form: Dict[str, Any],
@@ -110,32 +123,35 @@ class CredibilityScorer:
 - "غير موثوق" → 0-39"""
 
         try:
-            response = openai.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "أنت خبير تقييم مصداقية موارد بشرية. أعطِ JSON فقط بدون أي نص إضافي."
-                    },
-                    {
-                        "role": "user",
-                        "content": scoring_prompt
-                    }
-                ],
-                max_tokens=1200,
-                temperature=0.2  # Low temperature for consistent scoring
-            )
-            
-            response_text = response.choices[0].message.content.strip()
-            
-            # Clean JSON response (remove markdown code fences if present)
-            if response_text.startswith("```json"):
-                response_text = response_text.replace("```json", "").replace("```", "").strip()
-            elif response_text.startswith("```"):
-                response_text = response_text.replace("```", "").strip()
-            
+            # Run the async generate() inside a fresh event loop in a worker thread,
+            # so this sync method works correctly inside both sync and async contexts.
+            messages = [
+                {
+                    "role": "system",
+                    "content": "أنت خبير تقييم مصداقية موارد بشرية. أعطِ JSON فقط بدون أي نص إضافي.",
+                },
+                {
+                    "role": "user",
+                    "content": scoring_prompt,
+                },
+            ]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    asyncio.run,
+                    self.llm.generate(messages, temperature=0.2, max_tokens=1200),
+                )
+                response_text = future.result(timeout=45)
+
+            # Strip markdown code fences if the model wrapped the JSON
+            response_text = response_text.strip()
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+                response_text = response_text.strip()
+
             credibility_data = json.loads(response_text)
-            
+
             # Ensure all required fields exist
             credibility_data.setdefault("credibility_score", 50)
             credibility_data.setdefault("credibility_level", "متوسطة")
@@ -144,16 +160,21 @@ class CredibilityScorer:
             credibility_data.setdefault("red_flags", [])
             credibility_data.setdefault("recommendation", "يحتاج مراجعة")
             credibility_data.setdefault("bottom_line_summary", "تقييم مصداقية قياسي")
-            
+
             return credibility_data
-            
+
         except json.JSONDecodeError as e:
-            print(f"❌ JSON parsing error in credibility scoring: {str(e)}")
-            print(f"Raw response: {response_text}")
+            logger.error("JSON parsing error in credibility scoring: %s", e)
             return self._get_default_credibility_score()
         except Exception as e:
-            print(f"❌ Credibility scoring error: {str(e)}")
+            # Log the error but NEVER let it crash the interview
+            logger.error(
+                "Credibility scoring error (provider=%s): %s — returning safe default",
+                getattr(self._llm, 'providers', [('unknown',)])[0][0] if self._llm else 'none',
+                e,
+            )
             return self._get_default_credibility_score()
+
     
     def _format_form_data(self, form: Dict[str, Any]) -> str:
         """
@@ -174,7 +195,7 @@ class CredibilityScorer:
             "academic_status": "المسار الأكاديمي",
             "prayer_regularity": "المواظبة على الصلاة",
             "is_smoker": "التدخين",
-            "desired_job_title": "المسمى الوظيفي المطلوب",
+            "target_role": "المسمى الوظيفي المطلوب",
             "nationality": "الجنسية",
             "age_range": "الفئة العمرية"
         }

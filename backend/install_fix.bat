@@ -1,0 +1,1 @@
+set PYTHONUTF8=1&& chcp 65001&& pip install -r requirements.txt

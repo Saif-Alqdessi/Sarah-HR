@@ -3,7 +3,7 @@ load_dotenv()  # Load environment variables before any other imports
 
 import os
 import logging
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import traditional REST routes
@@ -11,6 +11,9 @@ from app.api.routes import agent, interview, scoring, analytics, transcription, 
 
 # Import new WebSocket handler
 from app.api.websocket.interview_ws import InterviewWebSocketHandler
+
+# Import Supabase client (used by inline endpoints below)
+from app.db.supabase_client import get_supabase_client
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,7 +57,41 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+        "architecture": "agentic_langgraph",
+        "version": "2.0.0"
+    }
+
+
+@app.get("/api/candidates/{candidate_id}")
+async def get_candidate(candidate_id: str):
+    """
+    Legacy REST endpoint for frontend compatibility
+    Fetches candidate data from Supabase
+    """
+    try:
+        supabase = get_supabase_client()
+        
+        result = supabase.table("candidates").select(
+            "id, full_name, phone_number, email, target_role, "
+            "years_of_experience, expected_salary, has_field_experience, "
+            "proximity_to_branch, can_start_immediately, academic_status, "
+            "created_at, updated_at"
+        ).eq("id", candidate_id).execute()
+        
+        if not result.data or len(result.data) == 0:
+            raise HTTPException(status_code=404, detail="Candidate not found")
+        
+        candidate = result.data[0]
+        
+        print(f"✅ Fetched candidate: {candidate.get('full_name', 'Unknown')}")
+        
+        return candidate
+        
+    except Exception as e:
+        print(f"❌ Error fetching candidate: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.websocket("/ws/interview/{candidate_id}")

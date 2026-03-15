@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { createSupabaseClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
-import Vapi from "@vapi-ai/web";
+import { useVoiceInterview } from "@/hooks/useVoiceInterview";
 
 
 
@@ -48,21 +48,18 @@ export default function InterviewPage() {
   const [callStatus, setCallStatus] = useState<
     "ready" | "live" | "processing" | "completed" | "analyzing"
   >("ready");
-  const [transcript, setTranscript] = useState<{ role: string; text: string }[]>(
-    []
-  );
   const [error, setError] = useState<string | null>(null);
   const [interviewId, setInterviewId] = useState<string | null>(null);
   const [detectedInconsistencies, setDetectedInconsistencies] = useState<Inconsistency[]>([]);
   const [showInconsistencyAlert, setShowInconsistencyAlert] = useState(false);
   const [registrationForm, setRegistrationForm] = useState<any>(null);
   const [loadingContext, setLoadingContext] = useState(true);
-  
-  // Vapi refs
-  const vapiCallRef = useRef<any>(null);
-  const vapiAssistantIdRef = useRef<string>(process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID || "");
-  const vapiApiKeyRef = useRef<string>(process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY || "");
-  const vapiContainerRef = useRef<HTMLDivElement>(null);
+
+  // ── Voice interview hook (replaces all inline WebSocket / audio logic) ────
+  const voice = useVoiceInterview();
+
+  // Derive transcript from the hook (hook owns the source of truth)
+  const transcript = voice.transcript;
 
   // Fetch registration context from the new endpoint
   useEffect(() => {
@@ -88,27 +85,41 @@ export default function InterviewPage() {
   // Fetch candidate from backend API instead of direct Supabase query
   useEffect(() => {
     async function fetchCandidate() {
-      if (!candidateId) return;
+      if (!candidateId) {
+        console.error('❌ No candidate ID provided');
+        setError("Missing candidate ID");
+        setIsLoading(false);
+        return;
+      }
+
+      console.log(`🔍 Fetching candidate data for ID: ${candidateId}`);
       try {
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
+        console.log(`🌐 API URL: ${apiUrl}`);
+
         const response = await fetch(`${apiUrl}/api/candidates/${candidateId}`, {
           method: "GET",
           headers: { "Content-Type": "application/json" },
         });
-        
+
+        console.log(`📡 API Response status: ${response.status}`);
+
         if (!response.ok) {
           if (response.status === 404) {
-            throw new Error("Candidate not found");
+            console.error('❌ Candidate not found in database');
+            throw new Error("Candidate not found in database. Please check the ID and try again.");
           } else if (response.status === 504) {
+            console.error('❌ Request timed out');
             throw new Error("Request timed out. Please try again.");
           } else {
             const errorData = await response.json().catch(() => ({}));
+            console.error(`❌ API Error: ${response.status}`, errorData);
             throw new Error(errorData.detail || `Error ${response.status}: Failed to load candidate`);
           }
         }
-        
+
         const data = await response.json();
-        
+
         // Map registration form fields to the expected structure
         const candidate = {
           ...data,
@@ -125,7 +136,7 @@ export default function InterviewPage() {
             registration_form_data: data.registration_form_data
           }
         };
-        
+
         setCandidate(candidate as Candidate);
       } catch (err) {
         const msg =
@@ -139,29 +150,44 @@ export default function InterviewPage() {
     fetchCandidate();
   }, [candidateId]);
 
-  // Clean up Vapi call on unmount
+  // Sync voice.error → page error state
   useEffect(() => {
-    return () => {
-      // Clean up any active call on unmount
-      if (vapiCallRef.current && typeof vapiCallRef.current.destroy === 'function') {
-        vapiCallRef.current.destroy();
-      }
-    };
-  }, []);
+    if (voice.error) {
+      setError(voice.error);
+      toast.error(voice.error);
+    }
+  }, [voice.error]);
+
+  // Sync voice connection status → callStatus
+  useEffect(() => {
+    if (voice.isConnected && callStatus === "ready") {
+      setCallStatus("live");
+      toast.success("متصلة");
+    }
+    if (!voice.isConnected && !voice.isConnecting && callStatus === "live") {
+      setCallStatus("processing");
+      toast.info("تم إنهاء المكالمة");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voice.isConnected, voice.isConnecting]);
+
+  // NOTE: voice hook cleanup is handled by useVoiceInterview's own useEffect.
+  // Do NOT add a duplicate stop() call here — in React Strict Mode the component
+  // mounts → unmounts → remounts, which would send {"type":"end"} immediately.
 
   const startInterview = async () => {
     if (!candidate) return;
     setError(null);
-    
+
     try {
-      // Initialize the interview session
+      // Initialize the interview session record in the DB
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
       const startRes = await fetch(`${apiUrl}/api/interview/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ candidate_id: candidate.id }),
       });
-      
+
       const startData = await startRes.json();
       if (startData.interview_id) {
         setInterviewId(startData.interview_id);
@@ -169,38 +195,9 @@ export default function InterviewPage() {
       } else {
         throw new Error("Failed to initialize interview session");
       }
-      
-      // Initialize Vapi call
-      const assistantId = vapiAssistantIdRef.current;
-      if (!assistantId) {
-        throw new Error("Missing Vapi Assistant ID");
-      }
-      
-      // Clear previous transcript
-      setTranscript([]);
-      
-      try {
-        // Initialize Vapi exactly as specified in the requirements
-        const vapi = new Vapi(process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY!);
-        
-        // Start the call with the assistant ID
-        const call = await vapi.start(assistantId);
-        
-        // Save call reference
-        vapiCallRef.current = call;
-        
-        // Update UI
-        setCallStatus("live");
-        toast.success("Live call started");
-      } catch (err) {
-        console.error("Error starting Vapi call:", err);
-        setError("Failed to start call: " + (err instanceof Error ? err.message : String(err)));
-        setCallStatus("ready");
-        toast.error("Failed to start call");
-      }
-      
-      // Note: The actual call reference and status updates are handled in the setTimeout callback
-      
+
+      // Delegate the entire audio pipeline to the hook
+      await voice.start(candidate.id);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to start interview";
       setCallStatus("ready");
@@ -208,69 +205,19 @@ export default function InterviewPage() {
       toast.error(msg);
     }
   };
-  
+
+
+
   const stopInterview = () => {
-    try {
-      // First check if we have a reference to the call
-      if (vapiCallRef.current) {
-        // Try the stop() method first (correct for v2.5.2)
-        if (typeof vapiCallRef.current.stop === 'function') {
-          vapiCallRef.current.stop();
-        } 
-        // Fall back to destroy() if stop doesn't exist
-        else if (typeof vapiCallRef.current.destroy === 'function') {
-          vapiCallRef.current.destroy();
-        } 
-        // Last resort - just log a warning
-        else {
-          console.warn('No stop or destroy method found on Vapi call reference');
-        }
-      }
-      
-      // Clear reference regardless
-      vapiCallRef.current = null;
-      setCallStatus("processing");
-      toast.info("Ending call...");
-    } catch (error) {
-      console.error("Error stopping interview:", error);
-      // Still clear reference and update UI even if there's an error
-      vapiCallRef.current = null;
-      setCallStatus("processing");
-    }
+    voice.stop();
+    setCallStatus("processing");
+    toast.info("إنهاء المقابلة...");
   };
-  
-  // No longer needed - Vapi handles audio processing
-  
-  // No longer needed - Vapi handles TTS
-  
+
   const endInterview = () => {
-    try {
-      // Stop the call if it's still active
-      if (vapiCallRef.current) {
-        // Try the stop() method first (correct for v2.5.2)
-        if (typeof vapiCallRef.current.stop === 'function') {
-          vapiCallRef.current.stop();
-        } 
-        // Fall back to destroy() if stop doesn't exist
-        else if (typeof vapiCallRef.current.destroy === 'function') {
-          vapiCallRef.current.destroy();
-        } 
-        // Last resort - just log a warning
-        else {
-          console.warn('No stop or destroy method found on Vapi call reference');
-        }
-        
-        // Clear reference regardless
-        vapiCallRef.current = null;
-      }
-    } catch (error) {
-      console.error("Error ending interview:", error);
-      // Still clear reference even if there's an error
-      vapiCallRef.current = null;
-    }
-    
+    voice.stop();
     setCallStatus("analyzing");
-    toast.success("Interview completed. Thank you!");
+    toast.success("تم الانتهاء من المقابلة. شكراً لك!");
     const ANALYSIS_DELAY_MS = 7000;
     setTimeout(() => router.push("/interview/complete"), ANALYSIS_DELAY_MS);
   };
@@ -312,9 +259,9 @@ export default function InterviewPage() {
         </div>
       );
     }
-    
+
     if (!registrationForm || Object.keys(registrationForm).length === 0) return null;
-    
+
     return (
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
         <h3 className="text-sm font-semibold text-blue-800 mb-3 flex items-center">
@@ -323,7 +270,7 @@ export default function InterviewPage() {
           </svg>
           📋 بيانات الطلب الإلكتروني
         </h3>
-        
+
         <div className="grid grid-cols-2 gap-3 text-sm">
           {registrationForm.years_of_experience && (
             <div>
@@ -331,28 +278,28 @@ export default function InterviewPage() {
               <span className="font-medium">{registrationForm.years_of_experience}</span>
             </div>
           )}
-          
+
           {registrationForm.expected_salary && (
             <div>
               <span className="text-gray-600">الراتب المتوقع:</span>{' '}
               <span className="font-medium">{registrationForm.expected_salary}</span>
             </div>
           )}
-          
+
           {registrationForm.proximity_to_branch && (
             <div className="col-span-2">
               <span className="text-gray-600">قرب السكن:</span>{' '}
               <span className="font-medium">{registrationForm.proximity_to_branch}</span>
             </div>
           )}
-          
+
           {registrationForm.has_field_experience && (
             <div>
               <span className="text-gray-600">خبرة بالمجال:</span>{' '}
               <span className="font-medium">{registrationForm.has_field_experience}</span>
             </div>
           )}
-          
+
           {registrationForm.can_start_immediately && (
             <div>
               <span className="text-gray-600">البدء فوراً:</span>{' '}
@@ -360,18 +307,18 @@ export default function InterviewPage() {
             </div>
           )}
         </div>
-        
+
         <div className="mt-3 text-xs text-blue-700">
           💡 سارة ستشير لهذه البيانات أثناء المقابلة
         </div>
       </div>
     );
   };
-  
+
   // Inconsistency Alert Component
   const InconsistencyAlert = ({ inconsistency }: { inconsistency?: Inconsistency }) => {
     if (!inconsistency || !showInconsistencyAlert) return null;
-    
+
     return (
       <div className="bg-red-50 border-l-4 border-red-500 p-4 mb-4 animate-pulse">
         <div className="flex items-center">
@@ -392,7 +339,7 @@ export default function InterviewPage() {
       </div>
     );
   };
-  
+
   return (
     <main className="min-h-screen bg-gradient-to-b from-amber-50 to-white">
       <div className="mx-auto max-w-2xl px-6 py-8 sm:py-12">
@@ -405,23 +352,78 @@ export default function InterviewPage() {
             {candidate?.target_role?.replace("_", " ") || "position"} interview
             with Sara.
           </p>
-          
+
           {/* Registration Context Panel */}
           <div className="mt-6">
-            <RegistrationContextPanel 
+            <RegistrationContextPanel
               registrationForm={registrationForm || candidate?.registration_form}
               loading={loadingContext}
             />
           </div>
-          
+
           {/* Inconsistency Alert */}
           {detectedInconsistencies.length > 0 && (
             <InconsistencyAlert inconsistency={detectedInconsistencies[detectedInconsistencies.length - 1]} />
           )}
 
-          {/* Vapi container - this is where the Vapi UI will be rendered */}
-          <div ref={vapiContainerRef} className="mt-8 w-full h-32 bg-gray-50 rounded-lg"></div>
-          
+          {/* Status indicator */}
+          <div className="mt-8 w-full h-32 bg-gray-50 rounded-lg flex items-center justify-center">
+            {callStatus === "ready" && (
+              <div className="text-center">
+                <div className="text-amber-600 text-lg mb-2">سارة</div>
+                <div className="text-gray-500">جاهزة للمقابلة</div>
+              </div>
+            )}
+            {callStatus === "live" && (
+              <div className="text-center">
+                {voice.isSpeaking ? (
+                  // Sarah is speaking
+                  <>
+                    <div className="flex items-center justify-center gap-2 text-blue-600 text-lg mb-2">
+                      <div className="flex gap-0.5">
+                        <div className="h-4 w-1 bg-blue-500 rounded animate-bounce" style={{ animationDelay: "0ms" }} />
+                        <div className="h-4 w-1 bg-blue-500 rounded animate-bounce" style={{ animationDelay: "150ms" }} />
+                        <div className="h-4 w-1 bg-blue-500 rounded animate-bounce" style={{ animationDelay: "300ms" }} />
+                      </div>
+                      سارة تتكلم
+                    </div>
+                    <div className="text-blue-400 text-sm">استمع...</div>
+                  </>
+                ) : voice.isListening ? (
+                  // User is speaking
+                  <>
+                    <div className="flex items-center justify-center gap-2 text-green-600 text-lg mb-2">
+                      <div className="h-3 w-3 bg-green-500 rounded-full animate-ping" />
+                      جاري التسجيل
+                    </div>
+                    <div className="text-green-500 text-sm">تكلّم الآن...</div>
+                  </>
+                ) : (
+                  // Connected, waiting
+                  <>
+                    <div className="flex items-center justify-center gap-2 text-green-600 text-lg mb-2">
+                      <div className="h-3 w-3 bg-green-500 rounded-full animate-pulse" />
+                      سارة
+                    </div>
+                    <div className="text-green-500">متصلة</div>
+                  </>
+                )}
+              </div>
+            )}
+            {callStatus === "processing" && (
+              <div className="text-center">
+                <div className="text-amber-600 text-lg mb-2">سارة</div>
+                <div className="text-amber-500">إنهاء المكالمة...</div>
+              </div>
+            )}
+            {callStatus === "analyzing" && (
+              <div className="text-center">
+                <div className="text-amber-600 text-lg mb-2">سارة</div>
+                <div className="text-amber-500">تحليل المقابلة...</div>
+              </div>
+            )}
+          </div>
+
           {/* Call controls */}
           <div className="mt-8 flex flex-col items-center gap-4">
             {callStatus === "ready" && (
@@ -495,11 +497,10 @@ export default function InterviewPage() {
                 {transcript.map((line, i) => (
                   <div
                     key={i}
-                    className={`rounded-lg px-3 py-2 text-sm ${
-                      line.role === "You"
-                        ? "ml-4 bg-amber-100 text-amber-900"
-                        : "mr-4 bg-amber-50 text-amber-800"
-                    }`}
+                    className={`rounded-lg px-3 py-2 text-sm ${line.role === "You"
+                      ? "ml-4 bg-amber-100 text-amber-900"
+                      : "mr-4 bg-amber-50 text-amber-800"
+                      }`}
                   >
                     <span className="font-medium">{line.role}:</span> {line.text}
                   </div>

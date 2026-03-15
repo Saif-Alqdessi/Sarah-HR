@@ -8,7 +8,13 @@ import re
 import logging
 from typing import Any
 
-import google.generativeai as genai
+# Updated import for the new package
+try:
+    import google_genai as genai
+except ImportError:
+    # Fallback to the old package if the new one is not installed
+    import google.generativeai as genai
+    logging.warning("Using deprecated google.generativeai package. Consider upgrading to google_genai.")
 
 from app.config import settings
 

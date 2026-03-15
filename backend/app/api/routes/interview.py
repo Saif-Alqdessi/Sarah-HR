@@ -2,6 +2,8 @@
 
 import logging
 import traceback
+import asyncio
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -21,30 +23,61 @@ class LinkRequest(BaseModel):
 
 @router.post("/start")
 async def start_interview(req: StartRequest):
-    """Create interview record. Returns interview_id for linking to Vapi call."""
-    try:
-        supabase = get_supabase_client()
-        res = (
-            supabase.table("interviews")
-            .insert({
-                "candidate_id": req.candidate_id,
+    """
+    Create an interview record and return its ID.
+
+    Retries up to 3 times on connection timeout (WinError 10060).
+    """
+    supabase = get_supabase_client()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "candidate_id": req.candidate_id,
+        "status": "in_progress",
+        "started_at": now_iso,
+        "full_transcript": [],
+        "detected_inconsistencies": [],
+    }
+
+    max_retries = 3
+    last_error = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            res = supabase.table("interviews").insert(payload).execute()
+
+            if not res.data or len(res.data) == 0:
+                logger.error("Interview insert returned no data. Response: %s", res)
+                raise HTTPException(status_code=500, detail="Failed to create interview")
+
+            row = res.data[0]
+            logger.info(
+                "✅ Interview record created: %s (candidate: %s, attempt %d)",
+                row["id"], req.candidate_id, attempt,
+            )
+            return {
+                "interview_id": str(row["id"]),
+                "started_at": now_iso,
                 "status": "in_progress",
-            })
-            .execute()
-        )
-        if not res.data or len(res.data) == 0:
-            logger.error("Interview insert returned no data. Response: %s", res)
-            raise HTTPException(status_code=500, detail="Failed to create interview")
-        row = res.data[0]
-        return {"interview_id": str(row["id"])}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Interview start failed: %s\n%s", e, traceback.format_exc())
-        detail = str(e)
-        if "row-level security" in detail.lower() or "policy" in detail.lower() or "42501" in detail:
-            detail += " Add SUPABASE_SERVICE_ROLE_KEY to backend .env (Dashboard > Settings > API > service_role)."
-        raise HTTPException(status_code=500, detail=detail)
+            }
+
+        except HTTPException:
+            raise  # Don't retry FastAPI exceptions
+
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                "Interview start attempt %d/%d failed: %s",
+                attempt, max_retries, e,
+            )
+            if attempt < max_retries:
+                await asyncio.sleep(2.0 * attempt)  # 2s, 4s backoff
+
+    # All retries exhausted
+    logger.exception("Interview start failed after %d attempts: %s", max_retries, last_error)
+    detail = str(last_error)
+    if "row-level security" in detail.lower() or "policy" in detail.lower() or "42501" in detail:
+        detail += " Add SUPABASE_SERVICE_ROLE_KEY to backend .env (Dashboard > Settings > API > service_role)."
+    raise HTTPException(status_code=500, detail=detail)
 
 
 @router.patch("/{interview_id}/link")

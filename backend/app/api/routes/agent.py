@@ -114,7 +114,7 @@ async def handle_agent_request(request: Request):
                 supabase.table("candidates")
                 .select(
                     "*,"
-                    "full_name_ar, years_of_experience, expected_salary, "
+                    "full_name, years_of_experience, expected_salary, "
                     "has_field_experience, proximity_to_branch, academic_status, "
                     "can_start_immediately, prayer_regularity, is_smoker, "
                     "registration_form_data"
@@ -129,7 +129,7 @@ async def handle_agent_request(request: Request):
                 registration_form = {
                     k: v for k, v in result.data[0].items() 
                     if v is not None and k in [
-                        "full_name_ar", "years_of_experience", "expected_salary",
+                        "full_name", "years_of_experience", "expected_salary",
                         "has_field_experience", "proximity_to_branch", "academic_status",
                         "can_start_immediately", "prayer_regularity", "is_smoker",
                         "registration_form_data"
