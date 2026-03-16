@@ -1,11 +1,9 @@
-"""Candidate routes: fetch, create, update candidates."""
+"""Candidate routes — clean, no legacy columns, no RPCs."""
 
 import logging
-import traceback
-import asyncio
-from typing import Optional, Dict, Any
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.db.supabase_client import get_supabase_client
@@ -22,58 +20,26 @@ class CandidateCreate(BaseModel):
 
 
 @router.get("/{candidate_id}")
-async def get_candidate(candidate_id: str, response: Response):
-    """
-    Fetch candidate by ID with proper error handling and timeout
-    """
-    try:
-        # Set a timeout to prevent hanging
-        return await asyncio.wait_for(_fetch_candidate(candidate_id), timeout=5.0)
-    except asyncio.TimeoutError:
-        logger.error(f"Timeout fetching candidate {candidate_id}")
-        response.status_code = 504  # Gateway Timeout
-        return {"error": "Request timed out while fetching candidate data"}
-    except Exception as e:
-        logger.exception(f"Error fetching candidate {candidate_id}: {e}\n{traceback.format_exc()}")
-        if "not found" in str(e).lower():
-            raise HTTPException(status_code=404, detail="Candidate not found")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-async def _fetch_candidate(candidate_id: str) -> Dict[str, Any]:
-    """
-    Internal function to fetch candidate with detailed error handling
-    """
+async def get_candidate(candidate_id: str):
+    """Fetch candidate by ID."""
     try:
         supabase = get_supabase_client()
-        
-        # Use a simple query first to avoid potential issues
         result = supabase.table("candidates").select("*").eq("id", candidate_id).execute()
-        
         if not result.data:
-            logger.warning(f"No candidate found with ID {candidate_id}")
             raise HTTPException(status_code=404, detail="Candidate not found")
-            
         return result.data[0]
-    except Exception as e:
-        logger.error(f"Database error fetching candidate {candidate_id}: {e}")
-        if "null value in column" in str(e):
-            # Handle specific null value error
-            logger.error("Null value detected in required column")
-            raise HTTPException(
-                status_code=422, 
-                detail="Database schema error: null value in required column"
-            )
+    except HTTPException:
         raise
+    except Exception as e:
+        logger.error("Error fetching candidate %s: %s", candidate_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{candidate_id}/registration-context")
 async def get_registration_context(candidate_id: str):
-    """Fetch registration form context for intelligent agent"""
+    """Fetch registration context — direct query only, no RPC, no fallbacks."""
     try:
         supabase = get_supabase_client()
-        
-        # Direct query — no RPC (the old RPC function still references full_name_ar)
         result = supabase.table("candidates").select(
             "full_name, years_of_experience, expected_salary, "
             "has_field_experience, proximity_to_branch, academic_status, "
@@ -82,14 +48,14 @@ async def get_registration_context(candidate_id: str):
             "nationality, grooming_objection, social_security_issues, "
             "registration_form_data"
         ).eq("id", candidate_id).execute()
-        
+
         if not result.data:
-            logger.warning(f"No registration context found for {candidate_id}")
+            logger.warning("No registration context for %s", candidate_id)
             return {}
-        
-        logger.info(f"✅ Loaded registration context for {candidate_id}")
+
+        logger.info("Registration context loaded for %s", candidate_id)
         return result.data[0]
-        
+
     except Exception as e:
-        logger.exception(f"Error fetching registration context: {e}")
+        logger.error("Error fetching registration context: %s", e)
         return {}
