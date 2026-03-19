@@ -23,6 +23,7 @@ class CandidateRegistrationForm(BaseModel):
     target_role: str = Field(..., description="Must be bakery-related role")
     expected_salary: Optional[int] = Field(None, ge=200, le=2000)
     years_of_experience: int = Field(default=0, ge=0, le=50)
+    company_name: Optional[str] = Field(default="Qabalan")
 
     # Demographics (Arabic values)
     date_of_birth: Optional[date] = None
@@ -72,6 +73,7 @@ class CandidateResponse(BaseModel):
     target_role: str
     years_of_experience: int
     expected_salary: Optional[int]
+    company_name: Optional[str]
     has_field_experience: str  # Arabic: 'نعم' or 'لا'
     proximity_to_branch: Optional[str]
     can_start_immediately: Optional[str]
@@ -106,6 +108,7 @@ class CandidateContract(BaseModel):
     proximity_to_branch: Optional[str] = None
     can_start_immediately: Optional[str] = None
     academic_status: Optional[str] = None
+    company_name: Optional[str] = "Qabalan"
 
     # Metadata
     contract_created_at: datetime = Field(default_factory=datetime.utcnow)

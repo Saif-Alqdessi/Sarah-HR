@@ -4,6 +4,11 @@ MEMORY-FIRST ARCHITECTURE v2: self.is_processing turn-lock, background DB, aggre
 """
 
 from fastapi import WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
+try:
+    from websockets.exceptions import ConnectionClosedError
+except ImportError:
+    ConnectionClosedError = Exception
 from typing import Dict, List, Optional
 import asyncio
 import logging
@@ -26,6 +31,57 @@ _MAX_CONSECUTIVE_ERRORS = 5
 _MIN_TRANSCRIPT_CHARS = 5
 _MIN_AUDIO_SIZE = 500
 
+import re
+from typing import Tuple, Set
+
+def is_valid_speech(transcript: str, min_meaningful_words: int = 3) -> Tuple[bool, str]:
+    """Semantic Speech Gate - Filters noise from real human speech"""
+    if not transcript or len(transcript.strip()) == 0:
+        return False, ""
+    
+    # Store original for logging
+    original = transcript
+    
+    # Step 1: Strip all punctuation and normalize
+    cleaned = re.sub(r'[^\w\s]', '', transcript)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    
+    # Step 2: Define Arabic filler words (common STT hallucinations)
+    arabic_fillers: Set[str] = {
+        'أها', 'اها', 'امم', 'اممم', 'آه', 'اه', 'اوه', 'او',
+        'يعني', 'كده', 'بس', 'طيب', 'ايوه', 'اي',
+        'لا', 'نعم', 'اه نعم', 'لا لا',
+        'ها', 'هم', 'هاه', 'اهم',
+        'واو', 'ياي', 'ايه', 'هاي'
+    }
+    
+    # Step 3: Define English filler words
+    english_fillers: Set[str] = {
+        'um', 'uh', 'ah', 'er', 'hmm', 'hm', 'oh', 'erm',
+        'yeah', 'yes', 'no', 'yep', 'nope',
+        'okay', 'ok', 'well', 'like', 'so'
+    }
+    
+    all_fillers = {f.lower() for f in arabic_fillers | english_fillers}
+    
+    words = cleaned.split()
+    meaningful_words = [
+        word.lower() for word in words
+        if word.lower() not in all_fillers and len(word) > 1
+    ]
+    
+    unique_meaningful = set(meaningful_words)
+    word_count = len(unique_meaningful)
+    is_valid = word_count >= min_meaningful_words
+    cleaned_text = ' '.join(meaningful_words) if meaningful_words else ""
+    
+    if not is_valid:
+        logger.info(f"🚫 NOISE FILTERED: '{original}' → {word_count} meaningful words (need {min_meaningful_words})")
+    else:
+        logger.info(f"✅ VALID SPEECH: '{original}' → {word_count} meaningful words: {cleaned_text}")
+    
+    return is_valid, cleaned_text
+
 
 class InterviewWebSocketHandler:
     """
@@ -43,13 +99,23 @@ class InterviewWebSocketHandler:
         self.supabase = get_supabase_client()
 
         # MEMORY-FIRST: this dict IS the source of truth, not Supabase
-        self.active_sessions: Dict[str, dict] = {}
+        self.active_sessions: dict = {}
 
-        # ═══ THE TURN-LOCK ═══
-        self.is_processing = False
+        # ═══ PER-SESSION TURN-LOCKS ═══
+        # Maps interview_id -> bool (True = Sarah is processing/speaking)
+        self._session_locks: Dict[str, bool] = {}
+        # Maps interview_id -> float (timestamp when Sarah finishes speaking)
+        self._cooldown_until: Dict[str, float] = {}
+
+        # TTS cooldown duration in seconds
+        self.TTS_COOLDOWN_SECONDS = 1.5
 
     async def handle_interview(self, websocket: WebSocket, candidate_id: str):
-        await websocket.accept()
+        try:
+            await websocket.accept()
+        except Exception as e:
+            logger.error(f"Failed to accept WebSocket: {e}")
+            return
 
         interview_id = str(uuid.uuid4())
         now_iso = datetime.utcnow().isoformat()
@@ -59,6 +125,10 @@ class InterviewWebSocketHandler:
 
         used_fallbacks: List[str] = []
         consecutive_errors: int = 0
+        connection_opened_at = asyncio.get_event_loop().time()
+
+        # Initialize interview_state to prevent UnboundLocalError
+        interview_state: Dict = {}
 
         try:
             # ── Load contract ────────────────────────────────────── #
@@ -73,7 +143,7 @@ class InterviewWebSocketHandler:
             )
 
             # ── Initialize state (MEMORY-FIRST) ─────────────────── #
-            interview_state: Dict = {
+            interview_state = {
                 "contract": contract,
                 "current_stage": "opening",
                 "questions_asked": [],
@@ -92,7 +162,7 @@ class InterviewWebSocketHandler:
                 "selected_question_category": "",
                 "selected_question_stage": "",
                 "categories_completed": 0,
-                "total_categories": 6,
+                "total_categories": 8,
                 "answer_is_valid": True,
                 "latest_user_input": "",
                 "latest_system_response": "",
@@ -104,22 +174,31 @@ class InterviewWebSocketHandler:
                 websocket, contract, interview_state, used_fallbacks
             )
 
-            connection_opened_at = asyncio.get_event_loop().time()
-
             # ══════════════════════════════════════════════════════ #
             #  MAIN CONVERSATION LOOP                                #
             # ══════════════════════════════════════════════════════ #
             while True:
+                if websocket.client_state == WebSocketState.DISCONNECTED:
+                    logger.info("🔌 Client disconnected, exiting interview loop")
+                    break
+
                 try:
                     message = await asyncio.wait_for(
-                        websocket.receive_json(), timeout=90.0
+                        websocket.receive_json(), timeout=300.0
                     )
                 except asyncio.TimeoutError:
-                    nudge = "لا تزال هنا؟ خذ وقتك."
-                    await self._safe_send_audio(websocket, nudge, interview_state, used_fallbacks)
-                    continue
+                    logger.warning("⏰ WebSocket receive timeout, sending ping...")
+                    try:
+                        await websocket.send_json({"type": "ping"})
+                        continue
+                    except Exception:
+                        logger.error("❌ Client not responding to ping, disconnecting")
+                        break
                 except WebSocketDisconnect:
                     logger.info("Client disconnected (interview %s)", interview_id)
+                    break
+                except ConnectionClosedError:
+                    logger.info("🔌 Connection closed by client")
                     break
 
                 msg_type = message.get("type")
@@ -127,9 +206,17 @@ class InterviewWebSocketHandler:
                 # ── AUDIO TURN ───────────────────────────────────── #
                 if msg_type == "audio":
 
-                    # ═══ TURN-LOCK CHECK (FIRST LINE) ═══
-                    if self.is_processing:
-                        logger.debug("🔒 LOCKED — dropping audio chunk")
+                    # ═══ PER-SESSION TURN-LOCK CHECK ═══
+                    if self._session_locks.get(interview_id, False):
+                        logger.debug("🔒 LOCKED [%s] — dropping audio chunk", interview_id[:8])
+                        continue
+
+                    # ═══ TTS COOLDOWN CHECK ═══
+                    cooldown_end = self._cooldown_until.get(interview_id, 0)
+                    now = asyncio.get_event_loop().time()
+                    if now < cooldown_end:
+                        remaining = cooldown_end - now
+                        logger.debug("❄️ COOLDOWN [%s] — %.1fs remaining, dropping", interview_id[:8], remaining)
                         continue
 
                     audio_data = message.get("data")
@@ -138,8 +225,8 @@ class InterviewWebSocketHandler:
                     if not audio_data or len(audio_data) < _MIN_AUDIO_SIZE:
                         continue
 
-                    # ═══ LOCK ═══
-                    self.is_processing = True
+                    # ═══ LOCK THIS SESSION ═══
+                    self._session_locks[interview_id] = True
                     try:
                         # 1. STT ─────────────────────────────────── #
                         try:
@@ -155,11 +242,28 @@ class InterviewWebSocketHandler:
                                 break
                             continue
 
-                        # 2. AGGRESSIVE VAD ──────────────────────── #
+                        # 2. SEMANTIC SPEECH GATE ──────────────────── #
                         clean = str(transcript).strip()
-                        if len(clean) < _MIN_TRANSCRIPT_CHARS or not any(c.isalpha() for c in clean):
-                            logger.info("🔇 VAD reject (%d chars): '%s'", len(clean), clean[:30])
+                        
+                        is_valid, cleaned_transcript = is_valid_speech(clean, min_meaningful_words=3)
+                        
+                        if not is_valid:
+                            logger.info("🔇 VAD reject (noise/short - '%s')", clean[:30])
+                            self._session_locks[interview_id] = False  # Release lock
+                            
+                            try:
+                                await websocket.send_json({
+                                    "type": "noise_filtered",
+                                    "message": "Background noise detected, please speak clearly",
+                                    "original_transcript": transcript
+                                })
+                            except Exception:
+                                pass
+                                
                             continue
+                            
+                        # Use cleaned semantic text
+                        transcript = cleaned_transcript
 
                         # Language monitor (non-fatal)
                         try:
@@ -181,7 +285,7 @@ class InterviewWebSocketHandler:
                             system_response = interview_state["conversation_history"][-1]["content"]
                             logger.info("Sarah: %s", system_response)
                             logger.info(
-                                "📊 stage=%s | categories=%d/6 | cat_idx=%d | history=%d",
+                                "📊 stage=%s | categories=%d/8 | cat_idx=%d | history=%d",
                                 interview_state.get("current_stage"),
                                 interview_state.get("categories_completed", 0),
                                 interview_state.get("current_category_index", 0),
@@ -204,11 +308,54 @@ class InterviewWebSocketHandler:
                             websocket, system_response, interview_state, used_fallbacks
                         )
 
+                        # ═══ SET COOLDOWN — Sarah just finished speaking ═══
+                        self._cooldown_until[interview_id] = (
+                            asyncio.get_event_loop().time() + self.TTS_COOLDOWN_SECONDS
+                        )
+                        logger.info("❄️ Cooldown set: %.1fs before accepting new audio", self.TTS_COOLDOWN_SECONDS)
+
                         # 5. BACKGROUND DB — fire and forget ──────── #
                         self.active_sessions[interview_id] = interview_state
                         asyncio.create_task(self._bg_upsert_transcript(
                             interview_id, candidate_id, interview_state,
                         ))
+
+                        # 6. AUTO-TERMINATION — closing stage detected ── #
+                        if interview_state.get("current_stage") == "closing":
+                            logger.info(
+                                "🏁 Interview %s reached closing stage (turn %d, %d/8 categories)",
+                                interview_id,
+                                interview_state.get("turn_count", 0),
+                                interview_state.get("categories_completed", 0),
+                            )
+                            # Send completion signal to frontend
+                            try:
+                                await websocket.send_json({
+                                    "type": "interview_complete",
+                                    "interview_id": interview_id,
+                                    "message": "Interview completed successfully",
+                                    "total_turns": interview_state.get("turn_count", 0),
+                                    "categories_completed": interview_state.get("categories_completed", 0),
+                                })
+                                logger.info("📤 Sent interview_complete signal to frontend")
+                            except Exception as sig_err:
+                                logger.error("Failed to send completion signal: %s", sig_err)
+
+                            # Background: finalize + enqueue scoring job
+                            asyncio.create_task(self._bg_finalize(
+                                interview_id, candidate_id, interview_state,
+                            ))
+                            asyncio.create_task(self._bg_enqueue_scoring_job(
+                                interview_id, candidate_id,
+                            ))
+
+                            # Graceful close after 2s (let frontend process)
+                            await asyncio.sleep(2)
+                            try:
+                                await websocket.close(code=1000, reason="Interview completed")
+                            except Exception:
+                                pass
+                            break
 
                         # Kill switch
                         if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
@@ -217,8 +364,8 @@ class InterviewWebSocketHandler:
                             break
 
                     finally:
-                        # ═══ UNLOCK — only after TTS is sent ═══
-                        self.is_processing = False
+                        # ═══ UNLOCK SESSION — only after TTS is fully sent ═══
+                        self._session_locks[interview_id] = False
 
                 # ── END SIGNAL ───────────────────────────────────── #
                 elif msg_type == "end":
@@ -253,7 +400,9 @@ class InterviewWebSocketHandler:
                 pass
 
         finally:
-            self.is_processing = False
+            # Clean up per-session locks
+            self._session_locks.pop(interview_id, None)
+            self._cooldown_until.pop(interview_id, None)
             # Final cleanup — background finalize if not already done
             if interview_id in self.active_sessions:
                 asyncio.create_task(self._bg_finalize(
@@ -395,18 +544,31 @@ class InterviewWebSocketHandler:
                 logger.error("Scorer failed: %s", e)
 
         final_score = scoring_result.get("credibility_score", live_score)
+
+        # Write only interview-level fields to `interviews` table.
+        # Detailed scoring (credibility_score, recommendation, summary, etc.)
+        # belongs in the `scores` table and is written by the scoring_worker.
         self.supabase.table("interviews").upsert({
             "id": interview_id,
             "candidate_id": candidate_id,
             "status": "completed",
+            "is_completed": True,
             "completed_at": datetime.utcnow().isoformat(),
             "duration_seconds": int(duration),
-            "credibility_score": int(final_score),
-            "recommendation": scoring_result.get("recommendation",
-                self.scorer.get_recommendation_from_score(final_score)),
-            "summary": scoring_result.get("bottom_line_summary", ""),
-            "scoring_details": scoring_result,
             "updated_at": datetime.utcnow().isoformat(),
         }).execute()
 
-        logger.info("Interview %s finalized | score=%s | dur=%.0fs", interview_id, final_score, duration)
+        logger.info("Interview %s finalized | live_score=%s | dur=%.0fs", interview_id, final_score, duration)
+
+    async def _bg_enqueue_scoring_job(self, interview_id: str, candidate_id: str):
+        """Enqueue a scoring job for the background worker to process."""
+        try:
+            self.supabase.table("scoring_jobs").insert({
+                "interview_id": interview_id,
+                "candidate_id": candidate_id,
+                "status": "pending",
+                "created_at": datetime.utcnow().isoformat(),
+            }).execute()
+            logger.info("BG: scoring job enqueued for %s", interview_id)
+        except Exception as e:
+            logger.warning("BG: failed to enqueue scoring job (non-fatal): %s", e)

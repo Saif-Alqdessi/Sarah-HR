@@ -7,7 +7,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import traditional REST routes
-from app.api.routes import agent, interview, scoring, analytics, transcription, candidates
+from app.api.routes import agent, interview, scoring, analytics, transcription, candidates, admin
 
 # Import new WebSocket handler
 from app.api.websocket.interview_ws import InterviewWebSocketHandler
@@ -21,8 +21,8 @@ logging.basicConfig(
 )
 
 app = FastAPI(
-    title="Golden Crust AI Recruiter API",
-    description="AI-powered interview orchestration and scoring",
+    title="Qabalan AI Recruiter API",
+    description="Backend API for Sarah AI Voice Interviewer orchestration and scoring",
     version="0.1.0",
 )
 
@@ -45,6 +45,7 @@ app.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"]
 app.include_router(candidates.router, prefix="/api/candidates", tags=["candidates"])
 app.include_router(agent.router, prefix="/api/agent", tags=["agent"])
 app.include_router(transcription.router, prefix="/api", tags=["transcription"])
+app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
 
 # Initialize WebSocket handler
 ws_handler = InterviewWebSocketHandler()
@@ -52,7 +53,7 @@ ws_handler = InterviewWebSocketHandler()
 
 @app.get("/")
 async def root():
-    return {"message": "Golden Crust AI Recruiter API", "status": "running"}
+    return {"message": "Qabalan AI Recruiter API", "status": "running"}
 
 
 @app.get("/health")

@@ -17,7 +17,8 @@ _WHISPER_ARABIC_PROMPT = (
     "مقابلة عمل، توظيف، خبرة، راتب، مهارة، عمان، الأردن، دينار، سنة، سنوات، "
     "شغل، بدي، عملت، اشتغلت، كيفك، شو، ليش، منيح، هيك، بكتدير، "
     "راتبتي المتوقع، مجال العمل، خبرة عملية، سنوات خبرة، "
-    "React, Python, FastAPI, برمجة، مبرمج، مخبز، Golden Crust"
+    # List of expected terms (names, technical words, company jargon)
+    "React, Python, FastAPI, برمجة، مبرمج، شركة قبلان"
 )
 
 # Error fallback — returned when transcription fails entirely

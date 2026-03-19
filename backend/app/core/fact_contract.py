@@ -38,12 +38,20 @@ class FactContractLoader:
         Raises:
             ValueError: If candidate not found or data invalid
         """
-        # Query database
-        result = self.supabase.table("candidates").select(
-            "full_name, target_role, years_of_experience, expected_salary, "
-            "has_field_experience, proximity_to_branch, can_start_immediately, "
-            "academic_status"
-        ).eq("id", candidate_id).single().execute()
+        # Query database — gracefully handle missing company_name column
+        try:
+            result = self.supabase.table("candidates").select(
+                "full_name, target_role, years_of_experience, expected_salary, "
+                "has_field_experience, proximity_to_branch, can_start_immediately, "
+                "academic_status, company_name"
+            ).eq("id", candidate_id).single().execute()
+        except Exception as e:
+            logger.warning("Query with company_name failed (%s), retrying without it", e)
+            result = self.supabase.table("candidates").select(
+                "full_name, target_role, years_of_experience, expected_salary, "
+                "has_field_experience, proximity_to_branch, can_start_immediately, "
+                "academic_status"
+            ).eq("id", candidate_id).single().execute()
 
         if not result.data:
             raise ValueError(f"Candidate {candidate_id} not found in database")
@@ -67,6 +75,7 @@ class FactContractLoader:
             proximity_to_branch=result.data.get('proximity_to_branch'),
             can_start_immediately=result.data.get('can_start_immediately'),
             academic_status=result.data.get('academic_status'),
+            company_name=result.data.get('company_name', 'Qabalan'),
         )
 
         logger.info(

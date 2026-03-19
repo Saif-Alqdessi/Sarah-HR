@@ -40,14 +40,27 @@ async def get_registration_context(candidate_id: str):
     """Fetch registration context — direct query only, no RPC, no fallbacks."""
     try:
         supabase = get_supabase_client()
-        result = supabase.table("candidates").select(
-            "full_name, years_of_experience, expected_salary, "
-            "has_field_experience, proximity_to_branch, academic_status, "
-            "can_start_immediately, prayer_regularity, is_smoker, "
-            "target_role, has_relatives_at_company, age_range, "
-            "nationality, grooming_objection, social_security_issues, "
-            "registration_form_data"
-        ).eq("id", candidate_id).execute()
+        
+        # Try with company_name first, fall back without it
+        try:
+            result = supabase.table("candidates").select(
+                "full_name, years_of_experience, expected_salary, "
+                "has_field_experience, proximity_to_branch, academic_status, "
+                "can_start_immediately, prayer_regularity, is_smoker, "
+                "target_role, has_relatives_at_company, age_range, "
+                "nationality, grooming_objection, social_security_issues, "
+                "registration_form_data, company_name"
+            ).eq("id", candidate_id).execute()
+        except Exception:
+            logger.warning("company_name column may not exist, retrying without it")
+            result = supabase.table("candidates").select(
+                "full_name, years_of_experience, expected_salary, "
+                "has_field_experience, proximity_to_branch, academic_status, "
+                "can_start_immediately, prayer_regularity, is_smoker, "
+                "target_role, has_relatives_at_company, age_range, "
+                "nationality, grooming_objection, social_security_issues, "
+                "registration_form_data"
+            ).eq("id", candidate_id).execute()
 
         if not result.data:
             logger.warning("No registration context for %s", candidate_id)

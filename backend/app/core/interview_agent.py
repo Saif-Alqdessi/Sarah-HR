@@ -98,7 +98,7 @@ class InterviewAgent:
     MAX_TURNS_PER_STAGE = 15
 
     # Canonical number of categories — must match the question_bank.
-    TOTAL_CATEGORIES = 6
+    TOTAL_CATEGORIES = 8
 
     # Topic keyword maps — used to auto-mark topics as covered
     TOPIC_KEYWORDS: Dict[str, List[str]] = {
@@ -282,12 +282,12 @@ class InterviewAgent:
                 category_index + 1, self.TOTAL_CATEGORIES,
             )
         else:
-            # CRITICAL: Do NOT advance the index — stay on same category.
-            # The agent will ask a generic follow-up and retry next turn.
+            # CRITICAL: Jump to closing to prevent infinite question-starvation loop
             logger.warning(
-                "Question selection failed for category %d — staying (will retry next turn)",
+                "Question selection failed for category %d — transitioning to closing to prevent infinite loop",
                 category_id,
             )
+            state["current_stage"] = "closing"
 
         return state
     
@@ -364,59 +364,23 @@ class InterviewAgent:
 
         return state
     
-    def _verify_facts_locally(self, response: str, contract: CandidateContract) -> tuple:
-        """
-        LOCAL fact verification — zero LLM calls.
-        Uses regex to detect and auto-correct wrong numbers in the response.
-
-        Returns:
-            (is_valid: bool, corrected_response: str)
-        """
-        corrected = response
-        is_valid = True
-
-        # --- Experience check ---
-        exp_pattern = r'(\d+)\s*(\u0633\u0646\u0629|\u0633\u0646\u0648\u0627\u062a|\u0633\u0646\u064a\u0646|year|years)'
-        for num_str, unit in re.findall(exp_pattern, response):
-            num = int(num_str)
-            if 0 < num <= 50 and num != contract.years_of_experience:
-                logger.warning(
-                    "Hallucination: stated %d years, contract says %d",
-                    num, contract.years_of_experience,
-                )
-                corrected = corrected.replace(
-                    f"{num_str} {unit}",
-                    f"{contract.years_of_experience} {unit}",
-                )
-                is_valid = False
-
-        # --- Salary check ---
-        sal_pattern = r'(\d+)\s*(\u062f\u064a\u0646\u0627\u0631|JOD)'
-        for amount_str, currency in re.findall(sal_pattern, response):
-            amount = int(amount_str)
-            expected = contract.expected_salary
-            if expected and abs(amount - expected) > expected * 0.5:
-                logger.warning(
-                    "Salary discrepancy: stated %d, contract says %d",
-                    amount, expected,
-                )
-                corrected = corrected.replace(
-                    f"{amount_str} {currency}",
-                    f"{expected} {currency}",
-                )
-                is_valid = False
-
-        return is_valid, corrected
+    # Fact verification is now handled by PersonaEnforcer
 
     def _verify_facts_node(self, state: InterviewState) -> InterviewState:
         """
         Node 3: LOCAL fact verification — no LLM call.
-        Auto-corrects hallucinated numbers before TTS.
+        Auto-corrects hallucinated numbers before TTS using PersonaEnforcer.
         """
         contract = state["contract"]
         response = state["latest_system_response"]
 
-        is_valid, corrected = self._verify_facts_locally(response, contract)
+        from app.core.persona_enforcer import PersonaEnforcer
+        enforcer = PersonaEnforcer()
+        is_valid, corrected = enforcer.enforce_facts(
+            response, 
+            contract_exp=contract.years_of_experience, 
+            contract_salary=contract.expected_salary
+        )
 
         if not is_valid:
             logger.warning("Hallucination corrected | original: %s | fixed: %s", response[:60], corrected[:60])
@@ -564,8 +528,9 @@ class InterviewAgent:
         field_exp_ar = "عنده خبرة" if contract.has_field_experience_bool() else "بدون خبرة"
 
         # Base persona with STRONG Jordanian dialect rules
+        company_display = contract.company_name or "Qabalan"
         base_prompt = f"""# هويتك
-أنت سارة، مسؤولة توظيف في مخبز Golden Crust (قبلان للصناعات الغذائية).
+أنت سارة، مسؤولة توظيف في شركة {company_display}.
 
 # حقائق المتقدم (من قاعدة البيانات - ثابتة)
 - الاسم: {contract.full_name}
@@ -602,7 +567,7 @@ class InterviewAgent:
             return base_prompt + f"""
 # المرحلة: الترحيب
 رحّب بالمتقدم بشكل دافئ واحترافي بلهجة أردنية.
-مثال: "مرحبا {contract.full_name}! أنا سارة من مخبز Golden Crust. كيفك اليوم؟ مستعد نبدأ؟"
+مثال: "مرحبا {contract.full_name}! أنا سارة من شركة {company_display}. كيفك اليوم؟ مستعد نبدأ؟"
 """
 
         elif stage == "questioning" and selected_question:

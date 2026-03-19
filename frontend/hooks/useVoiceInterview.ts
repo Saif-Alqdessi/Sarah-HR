@@ -47,6 +47,7 @@ export interface VoiceInterviewState {
   isConnected: boolean;
   isSpeaking: boolean;   // Sarah is currently playing audio
   isListening: boolean;  // Mic is recording (user is speaking)
+  isCompleted: boolean;  // Server sent interview_complete signal
   transcript: TranscriptLine[];
   currentStage: InterviewStage;
   turnCount: number;
@@ -56,6 +57,7 @@ export interface VoiceInterviewState {
 export interface VoiceInterviewActions {
   start: (candidateId: string) => Promise<void>;
   stop: () => void;
+  getStream: () => MediaStream | null;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -89,6 +91,7 @@ export function useVoiceInterview(): VoiceInterviewState & VoiceInterviewActions
   const [currentStage, setCurrentStage] = useState<InterviewStage>("opening");
   const [turnCount, setTurnCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [isCompleted, setIsCompleted] = useState(false);
 
   // ── Refs (survive re-renders, no re-render on change) ────────────────────
   const wsRef = useRef<WebSocket | null>(null);
@@ -370,6 +373,32 @@ export function useVoiceInterview(): VoiceInterviewState & VoiceInterviewActions
             break;
           }
 
+          case "interview_complete": {
+            console.log("🏁 Interview completed by server:", msg);
+            setIsCompleted(true);
+            setCurrentStage("closing");
+            if (typeof msg.total_turns === "number") {
+              setTurnCount(msg.total_turns);
+            }
+            // Auto-stop mic/VAD/WS (server will close WS in 2s anyway)
+            // We delay slightly so the last TTS can finish playing
+            setTimeout(() => {
+              stop();
+            }, 3000);
+            break;
+          }
+
+          case "text_fallback": {
+            // TTS failed on server — display text only
+            if (msg.text) {
+              setTranscript((prev) => [
+                ...prev,
+                { role: "Sarah", text: msg.text as string, timestamp: Date.now() },
+              ]);
+            }
+            break;
+          }
+
           case "error": {
             const errMsg = (msg.message as string) || "Server error";
             console.error("❌ Server error:", errMsg);
@@ -522,6 +551,7 @@ export function useVoiceInterview(): VoiceInterviewState & VoiceInterviewActions
     isConnected,
     isSpeaking,
     isListening,
+    isCompleted,
     transcript,
     currentStage,
     turnCount,
@@ -529,5 +559,6 @@ export function useVoiceInterview(): VoiceInterviewState & VoiceInterviewActions
     // Actions
     start,
     stop,
+    getStream: useCallback(() => streamRef.current, []),
   };
 }

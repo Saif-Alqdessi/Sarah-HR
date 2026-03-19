@@ -6,7 +6,7 @@
 from typing import List, Dict, Optional
 import random
 import logging
-import time
+import asyncio
 from supabase import Client
 
 logger = logging.getLogger(__name__)
@@ -75,13 +75,13 @@ class DatabaseQuestionSelector:
         self,
         category_id: int,
         exclude_ids: List[str] = None,
-        max_retries: int = 3,
+        max_retries: int = 2,
     ) -> Optional[Dict]:
         """
-        Select random question from category with retry logic.
+        Select random question from category. Non-blocking.
 
         Args:
-            category_id: Category ID (1-6)
+            category_id: Category ID (1-8)
             exclude_ids: List of question IDs already asked
             max_retries: Number of times to retry on failure
 
@@ -105,8 +105,8 @@ class DatabaseQuestionSelector:
                         "No questions found for category %d (attempt %d/%d)",
                         category_id, attempt, max_retries,
                     )
+                    # Do NOT sleep — return None and let the caller handle it
                     if attempt < max_retries:
-                        time.sleep(0.5)
                         continue
                     return None
 
@@ -137,8 +137,7 @@ class DatabaseQuestionSelector:
                     "Error selecting question for category %d (attempt %d/%d): %s",
                     category_id, attempt, max_retries, e,
                 )
-                if attempt < max_retries:
-                    time.sleep(0.5)
+                # No sleep — immediate retry to avoid blocking event loop
 
         logger.error("All %d retries failed for category %d", max_retries, category_id)
         return None

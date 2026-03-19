@@ -132,6 +132,54 @@ class PersonaEnforcer:
             "total_violations": self.violation_count
         }
 
+    def enforce_facts(self, text: str, contract_exp: int = None, contract_salary: int = None) -> Tuple[bool, str]:
+        """
+        Hard guard against LLM hallucinating years of experience or salary.
+        Stops the AI from mixing up 5 years and 10 years, catching text formats (خمس).
+        """
+        is_valid = True
+        corrected = text
+        
+        # Arabic number mapping
+        arabic_numbers = {
+            'واحد': 1, 'واحدة': 1, 'سنتين': 2, 'تنين': 2, 'اثنين': 2,
+            'تلات': 3, 'ثلاث': 3, 'تلاتة': 3, 'ثلاثة': 3,
+            'اربع': 4, 'أربع': 4, 'اربعة': 4, 'أربعة': 4,
+            'خمس': 5, 'خمسة': 5, 'خمست': 5,
+            'ست': 6, 'ستة': 6,
+            'سبع': 7, 'سبعة': 7,
+            'تمن': 8, 'ثمن': 8, 'تمانية': 8, 'ثمانية': 8,
+            'تسع': 9, 'تسعة': 9,
+            'عشر': 10, 'عشرة': 10
+        }
+        
+        if contract_exp is not None:
+            # 1. Match digits (5 سنين)
+            exp_pattern = r'(\d+)\s*(سنة|سنوات|سنين|year|years)'
+            for num_str, unit in re.findall(exp_pattern, text):
+                num = int(num_str)
+                if 0 < num <= 50 and num != contract_exp:
+                    corrected = corrected.replace(f"{num_str} {unit}", f"{contract_exp} {unit}")
+                    is_valid = False
+            
+            # 2. Match word numbers (خمس سنين)
+            word_exp_pattern = r'\b(واحد|واحدة|سنتين|تنين|اثنين|تلات|ثلاث|تلاتة|ثلاثة|اربع|أربع|اربعة|أربعة|خمس|خمسة|خمست|ست|ستة|سبع|سبعة|تمن|ثمن|تمانية|ثمانية|تسع|تسعة|عشر|عشرة)\s*(سنة|سنوات|سنين|year|years)\b'
+            for word, unit in re.findall(word_exp_pattern, text):
+                num = arabic_numbers.get(word)
+                if num and num != contract_exp:
+                    corrected = corrected.replace(f"{word} {unit}", f"{contract_exp} {unit}")
+                    is_valid = False
+            
+        if contract_salary is not None:
+            sal_pattern = r'(\d+)\s*(دينار|JOD|ليرة)'
+            for amount_str, currency in re.findall(sal_pattern, text):
+                amount = int(amount_str)
+                if abs(amount - contract_salary) > contract_salary * 0.5:
+                    corrected = corrected.replace(f"{amount_str} {currency}", f"{contract_salary} {currency}")
+                    is_valid = False
+        
+        return is_valid, corrected
+
 
 class CandidateLanguageMonitor:
     """

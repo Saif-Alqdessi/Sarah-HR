@@ -5,6 +5,7 @@ import { useRouter, useParams } from "next/navigation";
 import { createSupabaseClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
 import { useVoiceInterview } from "@/hooks/useVoiceInterview";
+import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 
 
 
@@ -57,6 +58,9 @@ export default function InterviewPage() {
 
   // ── Voice interview hook (replaces all inline WebSocket / audio logic) ────
   const voice = useVoiceInterview();
+
+  // ── Full-session audio recorder (records everything for Supabase Storage) ──
+  const recorder = useAudioRecorder();
 
   // Derive transcript from the hook (hook owns the source of truth)
   const transcript = voice.transcript;
@@ -158,11 +162,16 @@ export default function InterviewPage() {
     }
   }, [voice.error]);
 
-  // Sync voice connection status → callStatus
+  // Sync voice connection status → callStatus + start full-session recorder
   useEffect(() => {
     if (voice.isConnected && callStatus === "ready") {
       setCallStatus("live");
       toast.success("متصلة");
+      // Start full-session recording (reuse mic stream from voice hook)
+      const stream = voice.getStream();
+      if (stream) {
+        recorder.startFullSession(stream);
+      }
     }
     if (!voice.isConnected && !voice.isConnecting && callStatus === "live") {
       setCallStatus("processing");
@@ -174,6 +183,38 @@ export default function InterviewPage() {
   // NOTE: voice hook cleanup is handled by useVoiceInterview's own useEffect.
   // Do NOT add a duplicate stop() call here — in React Strict Mode the component
   // mounts → unmounts → remounts, which would send {"type":"end"} immediately.
+
+  // Auto-redirect when server sends interview_complete signal
+  useEffect(() => {
+    if (voice.isCompleted) {
+      setCallStatus("completed");
+      toast.success("تم إنهاء المقابلة بنجاح!");
+
+      // Stop full-session recorder
+      recorder.stopFullSession();
+
+      // Upload audio in background (don't block redirect)
+      if (interviewIdRef.current) {
+        recorder.uploadToSupabase(interviewIdRef.current).then((url) => {
+          if (url) {
+            console.log("✅ Interview audio uploaded:", url);
+          } else {
+            console.warn("⚠️ Audio upload returned null (may have no audio blob)");
+          }
+        }).catch((err) => {
+          console.error("❌ Audio upload failed:", err);
+          // Non-fatal — don't block the redirect
+        });
+      }
+
+      // Give user 3s to see the toast, then redirect
+      const timer = setTimeout(() => {
+        router.push(`/interview/complete?candidate_id=${candidateId}`);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voice.isCompleted]);
 
   const startInterview = async () => {
     if (!candidate) return;
