@@ -6,7 +6,7 @@
 
 [![Next.js](https://img.shields.io/badge/Frontend-Next.js_14-black?style=for-the-badge&logo=next.js&logoColor=white)](https://nextjs.org/)
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Gemini](https://img.shields.io/badge/AI-Gemini_1.5_Pro-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://ai.google.dev/)
+[![Groq](https://img.shields.io/badge/AI-Groq_Llama--3-FF5A00?style=for-the-badge)](https://groq.com/)
 [![ElevenLabs](https://img.shields.io/badge/Voice-ElevenLabs-6366F1?style=for-the-badge)](https://elevenlabs.io/)
 [![Supabase](https://img.shields.io/badge/Database-Supabase-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)](https://supabase.io/)
 [![License](https://img.shields.io/badge/License-Proprietary-red?style=for-the-badge)](LICENSE)
@@ -33,7 +33,8 @@
 
 ### 🎙️ **Live AI Voice Interview**
 - Real-time full-duplex audio streaming via WebSockets
-- Gemini 1.5 Pro for intelligent conversation flow
+- Groq Whisper for high-accuracy Arabic transcription (whisper-large-v3-turbo)
+- Groq Llama-3 for intelligent conversation flow with OpenAI fallback
 - ElevenLabs TTS with natural Jordanian Arabic voice
 - Web Audio API visualizer with 32-bar frequency display
 - Turn-locked processing to prevent audio overlap
@@ -85,9 +86,10 @@ flowchart TB
     end
     
     subgraph "AI Services"
-        C1[Gemini 1.5 Pro]
-        C2[ElevenLabs TTS]
-        C3[LangGraph Engine]
+        C1[Groq Whisper STT]
+        C2[Groq Llama-3 LLM]
+        C3[ElevenLabs TTS]
+        C4[LangGraph Engine]
     end
     
     subgraph "Data Layer"
@@ -100,10 +102,11 @@ flowchart TB
     A2 -->|WebSocket Audio| B2
     A3 -->|Analytics Queries| B1
     
-    B2 -->|Transcription| C1
-    C1 -->|Interview Logic| C3
-    C3 -->|Response Text| C2
-    C2 -->|Audio Stream| A2
+    B2 -->|Audio Stream| C1
+    C1 -->|Transcription| C2
+    C2 -->|Interview Logic| C4
+    C4 -->|Response Text| C3
+    C3 -->|Audio Stream| A2
     
     B1 -->|CRUD Operations| D1
     B3 -->|Score Calculation| D1
@@ -117,7 +120,7 @@ flowchart TB
 ### **Data Flow**
 
 1. **Candidate Registration**: Multi-step form → FastAPI → Supabase candidates table
-2. **Interview Session**: WebSocket audio → Gemini STT → LangGraph → ElevenLabs TTS → Browser
+2. **Interview Session**: WebSocket audio → Groq Whisper STT → Groq Llama-3 → LangGraph → ElevenLabs TTS → Browser
 3. **Scoring**: Background worker → Credibility analysis → Scores table → Dashboard
 4. **HR Review**: Dashboard queries → Materialized views → Real-time analytics
 
@@ -190,7 +193,8 @@ SUPABASE_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 
 # AI Services
-GEMINI_API_KEY=your-gemini-api-key
+GROQ_API_KEY=your-groq-api-key
+OPENAI_API_KEY=your-openai-api-key  # Fallback LLM
 ELEVENLABS_API_KEY=your-elevenlabs-api-key
 
 # Admin
@@ -295,7 +299,7 @@ sarah-ai-hr-interviewer/
 │   │   │   ├── fact_contract.py          # Zero-hallucination contracts
 │   │   │   └── persona_enforcer.py       # Jordanian dialect
 │   │   ├── services/
-│   │   │   ├── gemini_service.py         # Gemini API integration
+│   │   │   ├── groq_transcriber.py       # Groq Whisper STT
 │   │   │   ├── elevenlabs_tts.py         # Text-to-speech
 │   │   │   └── credibility_scorer.py     # Scoring algorithm
 │   │   ├── workers/
@@ -347,7 +351,8 @@ sarah-ai-hr-interviewer/
 
 | Technology | Purpose | Details |
 |------------|---------|---------|
-| **Gemini 1.5 Pro** | Interview conversation logic | Google AI |
+| **Groq Whisper** | Speech-to-text transcription | whisper-large-v3-turbo with Arabic hints |
+| **Groq Llama-3** | Interview conversation logic | llama-3.1-70b-versatile with OpenAI fallback |
 | **ElevenLabs** | Natural Arabic TTS | Jordanian voice model |
 | **LangGraph** | Agentic state machine | 8-node pipeline |
 | **Web Audio API** | Real-time audio visualization | Browser native |
@@ -491,7 +496,7 @@ Unauthorized copying, distribution, or use of this software is strictly prohibit
 
 Built with cutting-edge technologies:
 
-- [**Google Gemini**](https://ai.google.dev/) — Advanced conversational AI
+- [**Groq**](https://groq.com/) — Lightning-fast LLM inference and Whisper STT
 - [**ElevenLabs**](https://elevenlabs.io/) — Natural Arabic text-to-speech
 - [**Supabase**](https://supabase.io/) — Open-source Firebase alternative
 - [**FastAPI**](https://fastapi.tiangolo.com/) — Modern Python web framework
