@@ -316,13 +316,18 @@ export function useVoiceInterview(): VoiceInterviewState & VoiceInterviewActions
   const handleMessage = useCallback(
     (event: MessageEvent) => {
       try {
+        // Guard: skip binary messages (raw audio chunks)
+        if (event.data instanceof Blob || event.data instanceof ArrayBuffer) {
+          return;
+        }
+
         const msg = JSON.parse(event.data as string);
         console.log("📥 WS message:", msg.type, msg.metadata || "");
 
         switch (msg.type) {
           case "audio": {
-            // Play Sarah's response
-            if (msg.data) {
+            // Play Sarah's response — validate data is a base64 string
+            if (msg.data && typeof msg.data === "string" && msg.data.length > 100) {
               enqueueAudio(msg.data as string);
             }
             // Update transcript and stage metadata

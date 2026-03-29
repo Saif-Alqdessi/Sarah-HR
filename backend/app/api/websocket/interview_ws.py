@@ -20,9 +20,13 @@ from app.core.fact_contract import FactContractLoader
 from app.models.candidate import CandidateContract
 from app.core.persona_enforcer import CandidateLanguageMonitor
 from app.core.fallback_responses import get_fallback_response
+from app.core.flow_controller import InterviewFlowController
 from app.services.groq_transcriber import GroqTranscriber
 from app.services.elevenlabs_tts import ElevenLabsTTS
 from app.services.credibility_scorer import CredibilityScorer
+from app.services.question_selector import DatabaseQuestionSelector
+from app.services.enhanced_filters import is_valid_speech_enhanced
+from app.utils.admin_sync import finalize_interview
 from app.db.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -81,6 +85,12 @@ def is_valid_speech(transcript: str, min_meaningful_words: int = 3) -> Tuple[boo
         logger.info(f"✅ VALID SPEECH: '{original}' → {word_count} meaningful words: {cleaned_text}")
     
     return is_valid, cleaned_text
+
+
+# ═══════════════════════════════════════════════════════════════
+# Per-session flow controller registry
+# ═══════════════════════════════════════════════════════════════
+_flow_controllers: Dict[str, InterviewFlowController] = {}
 
 
 class InterviewWebSocketHandler:
@@ -169,6 +179,11 @@ class InterviewWebSocketHandler:
             }
             self.active_sessions[interview_id] = interview_state
 
+            # ── Initialize flow controller for this session ────── #
+            question_selector = DatabaseQuestionSelector(self.supabase)
+            flow_controller = InterviewFlowController(question_selector)
+            _flow_controllers[interview_id] = flow_controller
+
             # ── Opening greeting ─────────────────────────────────── #
             await self._send_opening_message(
                 websocket, contract, interview_state, used_fallbacks
@@ -242,120 +257,151 @@ class InterviewWebSocketHandler:
                                 break
                             continue
 
-                        # 2. SEMANTIC SPEECH GATE ──────────────────── #
-                        clean = str(transcript).strip()
-                        
-                        is_valid, cleaned_transcript = is_valid_speech(clean, min_meaningful_words=3)
-                        
-                        if not is_valid:
-                            logger.info("🔇 VAD reject (noise/short - '%s')", clean[:30])
-                            self._session_locks[interview_id] = False  # Release lock
-                            
-                            try:
-                                await websocket.send_json({
-                                    "type": "noise_filtered",
-                                    "message": "Background noise detected, please speak clearly",
-                                    "original_transcript": transcript
-                                })
-                            except Exception:
-                                pass
-                                
-                            continue
-                            
-                        # Use cleaned semantic text
-                        transcript = cleaned_transcript
-
-                        # Language monitor (non-fatal)
-                        try:
-                            mon = CandidateLanguageMonitor()
-                            eng, _ = mon.check_candidate_input(transcript)
-                            if eng:
-                                transcript += " [SYSTEM_NOTE: Candidate used English - redirect them]"
-                        except Exception:
-                            pass
-
-                        # 3. LLM — LangGraph ─────────────────────── #
-                        try:
-                            logger.info("Processing through LangGraph...")
-                            interview_state = await self.agent.process_turn(
+                        # ══════════════════════════════════════════ #
+                        #  2. FLOW CONTROLLER VALIDATION PIPELINE    #
+                        # ══════════════════════════════════════════ #
+                        fc = _flow_controllers.get(interview_id)
+                        if fc:
+                            flow_result = await fc.process_user_response(
+                                transcript=str(transcript).strip(),
                                 contract=contract,
-                                user_input=transcript,
+                            )
+                            action = flow_result["action"]
+                            flow_message = flow_result["message"]
+                            flow_meta = flow_result.get("metadata", {})
+
+                            logger.info(
+                                "📋 FlowController action=%s | gate=%s | q#=%d",
+                                action,
+                                flow_meta.get("gate", "-"),
+                                flow_meta.get("question_number", 0),
+                            )
+
+                            if action == "clarify":
+                                # ─── Clarification (noise or bad answer) ─── #
+                                # Send clarification via TTS, do NOT advance
+                                await self._safe_send_audio(
+                                    websocket, flow_message, interview_state, used_fallbacks
+                                )
+                                # Record in conversation history
+                                interview_state.setdefault("conversation_history", []).append({
+                                    "role": "user", "content": str(transcript).strip(),
+                                })
+                                interview_state["conversation_history"].append({
+                                    "role": "assistant", "content": flow_message,
+                                })
+                                consecutive_errors = 0
+
+                            elif action == "ask_question":
+                                # ─── Valid answer → generate LLM response + ask next Q ─── #
+                                try:
+                                    interview_state = await self.agent.process_turn(
+                                        contract=contract,
+                                        user_input=str(transcript).strip(),
+                                        current_state=interview_state,
+                                    )
+                                    # Build combined response: agent's reply + next question
+                                    agent_reply = interview_state.get("latest_system_response", "")
+                                    next_question = flow_message  # from FlowController
+
+                                    if agent_reply:
+                                        system_response = f"{agent_reply}\n\n{next_question}"
+                                    else:
+                                        system_response = next_question
+
+                                    # Sync flow state into interview_state
+                                    fc_state = fc.get_state()
+                                    interview_state["current_category_index"] = fc_state["current_category_index"]
+                                    interview_state["asked_question_ids"] = fc_state["answered_question_ids"]
+                                    interview_state["categories_completed"] = len(fc_state["answered_question_ids"])
+                                    interview_state["selected_question_text"] = fc_state.get("current_question", "")
+                                    interview_state["selected_question_id"] = fc_state.get("current_question_id", "")
+
+                                    consecutive_errors = 0
+                                except Exception as agent_err:
+                                    logger.error("Agent failed: %s", agent_err)
+                                    consecutive_errors += 1
+                                    system_response = flow_message  # Just use the question
+                                    interview_state.setdefault("conversation_history", []).append({
+                                        "role": "assistant", "content": system_response,
+                                    })
+
+                                # TTS the combined response
+                                await self._safe_send_audio(
+                                    websocket, system_response, interview_state, used_fallbacks
+                                )
+
+                                logger.info(
+                                    "📊 stage=%s | questions=%d/8 | cat_idx=%d",
+                                    interview_state.get("current_stage"),
+                                    interview_state.get("categories_completed", 0),
+                                    interview_state.get("current_category_index", 0),
+                                )
+
+                            elif action == "complete":
+                                # ─── Interview complete ─── #
+                                interview_state["current_stage"] = "closing"
+
+                                # Send closing TTS
+                                await self._safe_send_audio(
+                                    websocket, flow_message, interview_state, used_fallbacks
+                                )
+
+                                # Send completion signal to frontend
+                                try:
+                                    await websocket.send_json({
+                                        "type": "interview_complete",
+                                        "interview_id": interview_id,
+                                        "message": "Interview completed successfully",
+                                        "total_turns": interview_state.get("turn_count", 0),
+                                        "categories_completed": interview_state.get("categories_completed", 0),
+                                    })
+                                    logger.info("📤 Sent interview_complete signal")
+                                except Exception as sig_err:
+                                    logger.error("Failed to send completion signal: %s", sig_err)
+
+                                # Background: finalize via admin_sync
+                                asyncio.create_task(finalize_interview(
+                                    interview_id=interview_id,
+                                    flow_state=fc.get_state(),
+                                    contract=contract,
+                                ))
+
+                                # Graceful close after 2s
+                                await asyncio.sleep(2)
+                                try:
+                                    await websocket.close(code=1000, reason="Interview completed")
+                                except Exception:
+                                    pass
+                                break
+
+                        else:
+                            # ─── Fallback: no flow controller (shouldn't happen) ─── #
+                            logger.warning("No FlowController for %s, using legacy path", interview_id[:8])
+                            clean = str(transcript).strip()
+                            is_valid, cleaned_transcript = is_valid_speech(clean, min_meaningful_words=3)
+                            if not is_valid:
+                                self._session_locks[interview_id] = False
+                                continue
+                            interview_state = await self.agent.process_turn(
+                                contract=contract, user_input=cleaned_transcript,
                                 current_state=interview_state,
                             )
                             system_response = interview_state["conversation_history"][-1]["content"]
-                            logger.info("Sarah: %s", system_response)
-                            logger.info(
-                                "📊 stage=%s | categories=%d/8 | cat_idx=%d | history=%d",
-                                interview_state.get("current_stage"),
-                                interview_state.get("categories_completed", 0),
-                                interview_state.get("current_category_index", 0),
-                                len(interview_state.get("conversation_history", [])),
+                            await self._safe_send_audio(
+                                websocket, system_response, interview_state, used_fallbacks
                             )
-                            consecutive_errors = 0
-                        except Exception as agent_err:
-                            logger.error("Agent failed: %s", agent_err)
-                            consecutive_errors += 1
-                            stage = interview_state.get("current_stage", "generic")
-                            system_response = get_fallback_response(stage, used_fallbacks)
-                            used_fallbacks.append(system_response)
-                            interview_state.setdefault("conversation_history", []).append({
-                                "role": "assistant",
-                                "content": system_response,
-                            })
-
-                        # 4. TTS + send ───────────────────────────── #
-                        await self._safe_send_audio(
-                            websocket, system_response, interview_state, used_fallbacks
-                        )
 
                         # ═══ SET COOLDOWN — Sarah just finished speaking ═══
                         self._cooldown_until[interview_id] = (
                             asyncio.get_event_loop().time() + self.TTS_COOLDOWN_SECONDS
                         )
-                        logger.info("❄️ Cooldown set: %.1fs before accepting new audio", self.TTS_COOLDOWN_SECONDS)
 
-                        # 5. BACKGROUND DB — fire and forget ──────── #
+                        # BACKGROUND DB — fire and forget
                         self.active_sessions[interview_id] = interview_state
                         asyncio.create_task(self._bg_upsert_transcript(
                             interview_id, candidate_id, interview_state,
                         ))
-
-                        # 6. AUTO-TERMINATION — closing stage detected ── #
-                        if interview_state.get("current_stage") == "closing":
-                            logger.info(
-                                "🏁 Interview %s reached closing stage (turn %d, %d/8 categories)",
-                                interview_id,
-                                interview_state.get("turn_count", 0),
-                                interview_state.get("categories_completed", 0),
-                            )
-                            # Send completion signal to frontend
-                            try:
-                                await websocket.send_json({
-                                    "type": "interview_complete",
-                                    "interview_id": interview_id,
-                                    "message": "Interview completed successfully",
-                                    "total_turns": interview_state.get("turn_count", 0),
-                                    "categories_completed": interview_state.get("categories_completed", 0),
-                                })
-                                logger.info("📤 Sent interview_complete signal to frontend")
-                            except Exception as sig_err:
-                                logger.error("Failed to send completion signal: %s", sig_err)
-
-                            # Background: finalize + enqueue scoring job
-                            asyncio.create_task(self._bg_finalize(
-                                interview_id, candidate_id, interview_state,
-                            ))
-                            asyncio.create_task(self._bg_enqueue_scoring_job(
-                                interview_id, candidate_id,
-                            ))
-
-                            # Graceful close after 2s (let frontend process)
-                            await asyncio.sleep(2)
-                            try:
-                                await websocket.close(code=1000, reason="Interview completed")
-                            except Exception:
-                                pass
-                            break
 
                         # Kill switch
                         if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
@@ -400,9 +446,10 @@ class InterviewWebSocketHandler:
                 pass
 
         finally:
-            # Clean up per-session locks
+            # Clean up per-session locks and flow controller
             self._session_locks.pop(interview_id, None)
             self._cooldown_until.pop(interview_id, None)
+            _flow_controllers.pop(interview_id, None)
             # Final cleanup — background finalize if not already done
             if interview_id in self.active_sessions:
                 asyncio.create_task(self._bg_finalize(

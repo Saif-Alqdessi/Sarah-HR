@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { Search, ChevronUp, ChevronDown, Filter, Users } from "lucide-react";
+import { Search, ChevronUp, ChevronDown, Filter, Users, Upload, X, FileSpreadsheet, CheckCircle, AlertCircle } from "lucide-react";
 
 export default function CandidatesListPage() {
   const [candidates, setCandidates] = useState<any[]>([]);
@@ -12,8 +12,15 @@ export default function CandidatesListPage() {
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [filterStatus, setFilterStatus] = useState("all");
 
+  // Import drawer state
+  const [showImportDrawer, setShowImportDrawer] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<any>(null);
+
   useEffect(() => {
     fetchCandidates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sortBy, sortOrder, filterStatus]); // Refresh when sort/filter changes
 
   const fetchCandidates = async () => {
@@ -99,11 +106,68 @@ export default function CandidatesListPage() {
     }
   };
 
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+      setImportResult(null);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!selectedFile) return;
+    setImporting(true);
+    setImportResult(null);
+
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
+      const adminKey = process.env.NEXT_PUBLIC_ADMIN_API_KEY || "dev-admin-key";
+
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+
+      const res = await fetch(`${apiUrl}/api/admin/import/candidates`, {
+        method: "POST",
+        headers: {
+          "X-Admin-Key": adminKey,
+        },
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Import failed");
+      }
+
+      const result = await res.json();
+      setImportResult(result);
+      setSelectedFile(null);
+      
+      // Refresh candidates list
+      if (result.imported > 0) {
+        fetchCandidates();
+      }
+    } catch (err: any) {
+      setImportResult({ status: "error", message: err.message });
+    } finally {
+      setImporting(false);
+    }
+  };
+
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900">Candidates</h1>
-        <p className="text-sm text-slate-500 mt-1">Manage and review applicant interviews</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Candidates</h1>
+          <p className="text-sm text-slate-500 mt-1">Manage and review applicant interviews</p>
+        </div>
+        <button
+          onClick={() => setShowImportDrawer(true)}
+          className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
+        >
+          <Upload className="w-4 h-4" />
+          استيراد من Excel
+        </button>
       </div>
 
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col sm:flex-row gap-4">
@@ -244,6 +308,193 @@ export default function CandidatesListPage() {
           </table>
         </div>
       </div>
+
+      {/* Import Drawer */}
+      {showImportDrawer && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between p-6 border-b border-slate-200">
+              <div className="flex items-center gap-3">
+                <FileSpreadsheet className="w-6 h-6 text-amber-600" />
+                <h2 className="text-xl font-bold text-slate-900">استيراد المرشحين</h2>
+              </div>
+              <button
+                onClick={() => {
+                  setShowImportDrawer(false);
+                  setSelectedFile(null);
+                  setImportResult(null);
+                }}
+                className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5 text-slate-500" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              {!importResult ? (
+                <>
+                  {/* File Upload */}
+                  <div className="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center hover:border-amber-400 transition-colors">
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls,.csv"
+                      onChange={handleFileSelect}
+                      className="hidden"
+                      id="file-upload"
+                    />
+                    <label htmlFor="file-upload" className="cursor-pointer">
+                      <Upload className="w-12 h-12 text-slate-400 mx-auto mb-4" />
+                      <p className="text-sm font-medium text-slate-700 mb-1">
+                        اسحب الملف هنا أو انقر للاختيار
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        Excel (.xlsx, .xls) أو CSV (.csv)
+                      </p>
+                    </label>
+                  </div>
+
+                  {selectedFile && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <FileSpreadsheet className="w-8 h-8 text-amber-600" />
+                          <div>
+                            <p className="font-medium text-slate-900">{selectedFile.name}</p>
+                            <p className="text-xs text-slate-500">
+                              {(selectedFile.size / 1024).toFixed(1)} KB
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => setSelectedFile(null)}
+                          className="p-1 hover:bg-amber-100 rounded transition-colors"
+                        >
+                          <X className="w-4 h-4 text-slate-500" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Column Mapping Info */}
+                  <div className="bg-slate-50 rounded-lg p-4">
+                    <h3 className="font-semibold text-slate-900 mb-3">الأعمدة المطلوبة:</h3>
+                    <div className="grid grid-cols-2 gap-2 text-sm">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle className="w-4 h-4 text-green-500" />
+                        <span className="text-slate-700">الاسم الكامل *</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <CheckCircle className="w-4 h-4 text-green-500" />
+                        <span className="text-slate-700">رقم الهاتف *</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-slate-500">
+                        <div className="w-4 h-4" />
+                        <span>الوظيفة المطلوبة</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-slate-500">
+                        <div className="w-4 h-4" />
+                        <span>سنوات الخبرة</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-slate-500">
+                        <div className="w-4 h-4" />
+                        <span>الراتب المتوقع</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-slate-500">
+                        <div className="w-4 h-4" />
+                        <span>المنطقة السكنية</span>
+                      </div>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-3">* حقول إلزامية</p>
+                  </div>
+                </>
+              ) : (
+                /* Import Result */
+                <div className="space-y-4">
+                  {importResult.status === "error" ? (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
+                      <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-3" />
+                      <h3 className="font-semibold text-red-900 mb-2">فشل الاستيراد</h3>
+                      <p className="text-sm text-red-700">{importResult.message}</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="bg-green-50 border border-green-200 rounded-lg p-6 text-center">
+                        <CheckCircle className="w-12 h-12 text-green-500 mx-auto mb-3" />
+                        <h3 className="font-semibold text-green-900 mb-2">تم الاستيراد بنجاح!</h3>
+                        <div className="grid grid-cols-3 gap-4 mt-4">
+                          <div>
+                            <p className="text-2xl font-bold text-green-600">{importResult.imported}</p>
+                            <p className="text-xs text-slate-600">تم الاستيراد</p>
+                          </div>
+                          <div>
+                            <p className="text-2xl font-bold text-amber-600">{importResult.skipped}</p>
+                            <p className="text-xs text-slate-600">تم التخطي</p>
+                          </div>
+                          <div>
+                            <p className="text-2xl font-bold text-red-600">{importResult.error_count}</p>
+                            <p className="text-xs text-slate-600">أخطاء</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {importResult.errors && importResult.errors.length > 0 && (
+                        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                          <h4 className="font-semibold text-red-900 mb-2 text-sm">الأخطاء:</h4>
+                          <div className="space-y-2 max-h-40 overflow-y-auto">
+                            {importResult.errors.slice(0, 5).map((err: any, i: number) => (
+                              <div key={i} className="text-xs text-red-700">
+                                <span className="font-medium">صف {err.row}:</span> {err.reason}
+                              </div>
+                            ))}
+                            {importResult.errors.length > 5 && (
+                              <p className="text-xs text-red-600">... و {importResult.errors.length - 5} أخطاء أخرى</p>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-6 border-t border-slate-200 flex justify-end gap-3">
+              <button
+                onClick={() => {
+                  setShowImportDrawer(false);
+                  setSelectedFile(null);
+                  setImportResult(null);
+                }}
+                className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                {importResult ? "إغلاق" : "إلغاء"}
+              </button>
+              {!importResult && (
+                <button
+                  onClick={handleImport}
+                  disabled={!selectedFile || importing}
+                  className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {importing ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      جاري الاستيراد...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-4 h-4" />
+                      استيراد الآن
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
